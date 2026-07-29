@@ -14,6 +14,10 @@ vi.mock("@/lib/redis", () => {
         kvStore.set(key, val);
         return "OK";
       }),
+      del: vi.fn(async (key: string) => {
+        kvStore.delete(key);
+        return 1;
+      }),
       exists: vi.fn(async (key: string) => (kvStore.has(key) ? 1 : 0)),
       sadd: vi.fn(async (key: string, member: string) => {
         const set = setStore.get(key) || new Set<string>();
@@ -117,6 +121,11 @@ vi.mock("@/lib/redis", () => {
         listStore.clear();
       },
     },
+    resetSystemData: vi.fn(async () => {
+      kvStore.clear();
+      setStore.clear();
+      listStore.clear();
+    }),
   };
 });
 
@@ -127,6 +136,7 @@ import { POST as inputProductionHandler } from "./production/input/route";
 import { POST as transferPhoiHandler } from "./production/transfer/route";
 import { GET as getUsersHandler } from "./users/route";
 import { GET as getPoPipelineHandler } from "./reports/po-pipeline/route";
+import { POST as resetSystemHandler } from "./system/reset/route";
 import { createPO } from "@/lib/po-wo-engine";
 import { inputProduction, transferPhoi } from "@/lib/xnt-engine";
 import { signToken, AUTH_COOKIE_NAME } from "@/lib/auth";
@@ -136,7 +146,6 @@ describe("API Routes & Security Integration Tests", () => {
     (await import("@/lib/redis")).redis.__reset();
     vi.clearAllMocks();
 
-    // Seed test users into kvStore
     const adminPass = await bcrypt.hash("Admin@123", 10);
     const viewerPass = await bcrypt.hash("Viewer@123", 10);
     const dispatcherPass = await bcrypt.hash("Dispatcher@123", 10);
@@ -262,5 +271,22 @@ describe("API Routes & Security Integration Tests", () => {
     const data3 = await res3.json();
     const poItem3 = data3.find((i: any) => i.poId === po.poId);
     expect(poItem3.coverageStatus).toBe("SUFFICIENT");
+  });
+
+  it("7. System Data Reset Endpoint: reject DISPATCHER role with 403, allow ADMIN role", async () => {
+    const dispatcherToken = signToken({ id: "u3", username: "dispatcher", role: "DISPATCHER" });
+    const adminToken = signToken({ id: "u1", username: "admin", role: "ADMIN" });
+
+    // Non-admin request -> 403
+    const reqForbidden = createMockRequest("http://localhost:3000/api/system/reset", "POST", undefined, dispatcherToken);
+    const resForbidden = await resetSystemHandler(reqForbidden);
+    expect(resForbidden.status).toBe(403);
+
+    // Admin request -> 200 OK
+    const reqAdmin = createMockRequest("http://localhost:3000/api/system/reset", "POST", undefined, adminToken);
+    const resAdmin = await resetSystemHandler(reqAdmin);
+    expect(resAdmin.status).toBe(200);
+    const data = await resAdmin.json();
+    expect(data.success).toBe(true);
   });
 });

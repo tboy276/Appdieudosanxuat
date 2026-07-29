@@ -303,3 +303,78 @@ export const redis = {
     return (await realUpstashClient.eval(script, keys, args)) as T;
   },
 };
+
+/**
+ * Flush & Reset System Database
+ */
+export async function resetSystemData(): Promise<void> {
+  if (isDummyOrMissing) {
+    inMemoryKV.clear();
+    inMemoryList.clear();
+    inMemorySet.clear();
+    await initInMemorySeed();
+    return;
+  }
+
+  // 1. Clear POs
+  const poIds = await redis.smembers("pos");
+  for (const id of poIds) {
+    await redis.del(`po:${id}`);
+  }
+  await redis.del("pos");
+
+  // 2. Clear WOs
+  const woIds = await redis.smembers("wos");
+  for (const id of woIds) {
+    await redis.del(`wo:${id}`);
+  }
+  await redis.del("wos");
+
+  // 3. Clear Products
+  await redis.del("products");
+
+  // 4. Clear Shipments
+  const shipIds = await redis.smembers("shipments");
+  for (const id of shipIds) {
+    await redis.del(`shipment:${id}`);
+  }
+  await redis.del("shipments");
+
+  // 5. Clear Stock States & Ledgers
+  const activePairs = await redis.smembers("active_inventory_pairs");
+  for (const pair of activePairs) {
+    const [code, sku] = pair.split(":");
+    if (code && sku) {
+      await redis.del(`stock:${code}:${sku}`);
+      await redis.del(`opening:${code}:${sku}`);
+      await redis.del(`tx:${code}:${sku}`);
+    }
+  }
+  await redis.del("active_inventory_pairs");
+
+  // 6. Re-seed default Workcenters and Admin User
+  const WORK_CENTERS: WorkCenter[] = [
+    { code: "CUAPHOI", name: "Tổ cưa phôi PSX", scrapRate: 0.01, isFirstStep: true },
+    { code: "D1", name: "Xưởng Đúc 1", scrapRate: 0.10, isFirstStep: true },
+    { code: "D2", name: "Xưởng Đúc 2", scrapRate: 0.10, isFirstStep: true },
+    { code: "R1", name: "Xưởng Rèn 1", scrapRate: 0.05, isFirstStep: true },
+    { code: "R2", name: "Xưởng Rèn 2", scrapRate: 0.05, isFirstStep: true },
+    { code: "CK1", name: "Xưởng Cơ Khí 1", scrapRate: 0.02 },
+    { code: "CK2", name: "Xưởng Cơ Khí 2", scrapRate: 0.02 },
+    { code: "CK3", name: "Xưởng Cơ Khí 3", scrapRate: 0.02 },
+    { code: "MNL", name: "Xưởng Mạ Nhiệt Luyện", scrapRate: 0.03 },
+    { code: "LR", name: "Xưởng Lắp Ráp", scrapRate: 0.00, isFinalStep: true },
+  ];
+
+  const adminPass = await bcrypt.hash("Admin@123", 10);
+  const adminUser: User = {
+    id: "usr_admin_001",
+    username: "admin",
+    passwordHash: adminPass,
+    role: "ADMIN",
+    createdAt: new Date().toISOString(),
+  };
+
+  await redis.set("workcenters", WORK_CENTERS);
+  await redis.set("users", [adminUser]);
+}

@@ -11,6 +11,9 @@ import {
   ChevronDown,
   X,
   Plus,
+  RotateCcw,
+  AlertTriangle,
+  RefreshCw,
 } from "lucide-react";
 import { UserRole } from "@/lib/types";
 
@@ -29,6 +32,7 @@ interface HeaderProps {
 const PATH_TITLES: Record<string, string> = {
   "/dashboard": "Tổng Quan Sản Xuất",
   "/dashboard/xnt": "Bảng Cân Bằng Xuất - Nhập - Tồn Real-time",
+  "/dashboard/pipeline": "Tiến Độ PO & Tồn Kho WIP",
   "/dashboard/products": "Quản Lý Danh Mục Sản Phẩm & Routing",
   "/dashboard/po": "Quản Lý Đơn Hàng PO",
   "/dashboard/wo": "Quản Lý Lệnh Sản Xuất WO",
@@ -52,6 +56,11 @@ export default function Header({
   const [searchQuery, setSearchQuery] = useState("");
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
 
+  // Reset Modal State
+  const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState("");
+
   const displayTitle = title || PATH_TITLES[pathname] || "Quản Lý & Điều Độ Sản Xuất";
 
   const handleLogout = async () => {
@@ -60,6 +69,31 @@ export default function Header({
       router.push("/login");
     } catch {
       router.push("/login");
+    }
+  };
+
+  const handleConfirmResetData = async () => {
+    setIsResetting(true);
+    setResetError("");
+
+    try {
+      const res = await fetch("/api/system/reset", {
+        method: "POST",
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setResetError(data.error || "Reset dữ liệu hệ thống thất bại.");
+        setIsResetting(false);
+        return;
+      }
+
+      setIsResetModalOpen(false);
+      window.location.reload();
+    } catch {
+      setResetError("Không thể kết nối đến máy chủ.");
+    } finally {
+      setIsResetting(false);
     }
   };
 
@@ -120,6 +154,20 @@ export default function Header({
           <Bell className="w-4 h-4" />
         </button>
 
+        {/* Admin System Data Reset Icon Button */}
+        {user?.role === "ADMIN" && (
+          <button
+            onClick={() => {
+              setResetError("");
+              setIsResetModalOpen(true);
+            }}
+            className="p-2 rounded text-rose-600 hover:text-rose-700 hover:bg-rose-50 border border-transparent hover:border-rose-200 transition-colors relative"
+            title="Reset toàn bộ dữ liệu hệ thống (Quyền ADMIN)"
+          >
+            <RotateCcw className="w-4 h-4" />
+          </button>
+        )}
+
         {/* Primary Action Button (Optional) */}
         {onPrimaryAction && (
           <button
@@ -172,6 +220,74 @@ export default function Header({
           )}
         </div>
       </div>
+
+      {/* Admin Reset Data Confirmation Modal */}
+      {isResetModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-canvas border border-border rounded shadow-xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center gap-3 border-b border-border pb-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-full bg-rose-100 text-rose-600 shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-txt-primary">Xác Nhận Reset Dữ Liệu Hệ Thống</h3>
+                <p className="text-[11px] text-txt-secondary">Quyền quản trị viên (ADMIN)</p>
+              </div>
+            </div>
+
+            <div className="p-3 rounded bg-rose-50 border border-rose-200 text-rose-900 text-xs space-y-2">
+              <p className="font-semibold text-rose-800">⚠️ CẢNH BÁO NGHĨEM TRỌNG:</p>
+              <p>
+                Thao tác này sẽ <strong className="underline">XÓA HẲN HOÀN TOÀN</strong> toàn bộ dữ liệu kinh doanh gồm:
+              </p>
+              <ul className="list-disc list-inside space-y-0.5 text-[11px] text-rose-800 font-mono">
+                <li>Tất cả Đơn hàng PO (thông tin & trạng thái)</li>
+                <li>Tất cả Lệnh sản xuất WO (kế hoạch & thực tế)</li>
+                <li>Tất cả Danh mục Sản phẩm (SKU & Routing)</li>
+                <li>Toàn bộ Tồn kho Dual-State & Lịch sử giao dịch</li>
+              </ul>
+              <p className="text-[11px] italic font-medium pt-1">
+                Hệ thống chỉ giữ lại 10 Xưởng sản xuất & Tài khoản Admin mặc định.
+              </p>
+            </div>
+
+            {resetError && (
+              <div className="p-3 rounded bg-amber-50 border border-amber-200 text-warning text-xs">
+                {resetError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-border">
+              <button
+                type="button"
+                onClick={() => setIsResetModalOpen(false)}
+                disabled={isResetting}
+                className="px-4 py-1.5 rounded bg-subtle border border-border text-txt-primary hover:bg-border text-xs font-medium disabled:opacity-50"
+              >
+                Hủy Bỏ
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmResetData}
+                disabled={isResetting}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded bg-rose-600 text-white text-xs font-bold hover:bg-rose-700 disabled:opacity-50 transition-colors shadow-sm"
+              >
+                {isResetting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Đang xóa dữ liệu...</span>
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Xác Nhận Reset Dữ Liệu</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

@@ -22,7 +22,7 @@ import { declareOpeningStock, getStockState, getTodayDateString } from "./invent
 import { StockState } from "./types";
 import { redis } from "./redis";
 
-describe("lib/inventory.ts - Opening Inventory & Stock State", () => {
+describe("lib/inventory.ts - Opening Inventory & Stock State (Dual-State Model)", () => {
   beforeEach(() => {
     (redis as any).__reset();
     vi.clearAllMocks();
@@ -32,16 +32,14 @@ describe("lib/inventory.ts - Opening Inventory & Stock State", () => {
     const state = await getStockState("CUAPHOI", "SKU-999");
     expect(state).toEqual({
       tonPhoi: 0,
-      tonPhoiDauVao: 0,
-      tonBanThanhPham: 0,
+      tonThanhPham: 0,
     });
   });
 
   it("should write both state key and opening snapshot key with the exact same values on declareOpeningStock", async () => {
     const openingData: StockState = {
       tonPhoi: 500,
-      tonPhoiDauVao: 0,
-      tonBanThanhPham: 0,
+      tonThanhPham: 0,
     };
 
     const today = getTodayDateString();
@@ -53,8 +51,7 @@ describe("lib/inventory.ts - Opening Inventory & Stock State", () => {
     // Verify current state
     const currentStock = await getStockState("CUAPHOI", "SKU-101");
     expect(currentStock.tonPhoi).toBe(500);
-    expect(currentStock.tonPhoiDauVao).toBe(0);
-    expect(currentStock.tonBanThanhPham).toBe(0);
+    expect(currentStock.tonThanhPham).toBe(0);
 
     // Verify opening snapshot was written to Redis
     const store = (redis as any).__store;
@@ -62,8 +59,7 @@ describe("lib/inventory.ts - Opening Inventory & Stock State", () => {
 
     expect(snapshot).toBeDefined();
     expect(snapshot.tonPhoi).toBe(500);
-    expect(snapshot.tonPhoiDauVao).toBe(0);
-    expect(snapshot.tonBanThanhPham).toBe(0);
+    expect(snapshot.tonThanhPham).toBe(0);
     expect(snapshot.declaredBy).toBe("admin");
     expect(snapshot.declaredAt).toBeDefined();
   });

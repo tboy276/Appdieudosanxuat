@@ -82,6 +82,7 @@ export default function POPipelineViewPage() {
 
   const poItems = useMemo(() => (Array.isArray(rawPoItems) ? rawPoItems : []), [rawPoItems]);
 
+  // Distinct customer list for dropdown filter
   const customerList = useMemo(() => {
     const set = new Set<string>();
     poItems.forEach((item) => {
@@ -90,6 +91,7 @@ export default function POPipelineViewPage() {
     return Array.from(set).sort();
   }, [poItems]);
 
+  // Toggle row expansion
   const toggleRow = (poId: string) => {
     setExpandedRowIds((prev) => ({
       ...prev,
@@ -97,20 +99,25 @@ export default function POPipelineViewPage() {
     }));
   };
 
+  // Filtered dataset
   const filteredItems = useMemo(() => {
     return poItems.filter((item) => {
+      // Risk filter
       if (coverageFilter !== "ALL" && item.coverageStatus !== coverageFilter) {
         return false;
       }
 
+      // PO status filter
       if (poStatusFilter !== "ALL" && item.poStatus !== poStatusFilter) {
         return false;
       }
 
+      // Customer filter
       if (customerFilter !== "ALL" && item.customerName !== customerFilter) {
         return false;
       }
 
+      // Search term
       if (searchTerm.trim()) {
         const term = searchTerm.toLowerCase();
         const matchPo = item.poNumber.toLowerCase().includes(term);
@@ -126,12 +133,14 @@ export default function POPipelineViewPage() {
     });
   }, [poItems, coverageFilter, poStatusFilter, customerFilter, searchTerm]);
 
+  // Metrics Bar
   const countSufficient = filteredItems.filter((i) => i.coverageStatus === "SUFFICIENT").length;
   const countWipCovered = filteredItems.filter((i) => i.coverageStatus === "WIP_COVERED").length;
   const countShortage = filteredItems.filter((i) => i.coverageStatus === "SHORTAGE").length;
 
   return (
     <div className="space-y-6">
+      {/* Top Metrics Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
         <div className="p-4 rounded bg-canvas border border-border flex items-center justify-between">
           <div>
@@ -190,8 +199,10 @@ export default function POPipelineViewPage() {
         </div>
       </div>
 
+      {/* Top Filter & Search Bar */}
       <div className="p-4 rounded bg-canvas border border-border space-y-3">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          {/* Large Search Input */}
           <div className="relative flex-1">
             <Search className="w-4 h-4 absolute left-3 text-txt-secondary" />
             <input
@@ -204,6 +215,7 @@ export default function POPipelineViewPage() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Filter Rủi ro */}
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-subtle border border-border text-xs text-txt-secondary">
               <Filter className="w-3.5 h-3.5" />
               <span>Rủi ro:</span>
@@ -219,6 +231,7 @@ export default function POPipelineViewPage() {
               </select>
             </div>
 
+            {/* Filter PO Status */}
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-subtle border border-border text-xs text-txt-secondary">
               <Layers className="w-3.5 h-3.5" />
               <span>Trạng thái PO:</span>
@@ -234,6 +247,7 @@ export default function POPipelineViewPage() {
               </select>
             </div>
 
+            {/* Filter Customer */}
             <div className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-subtle border border-border text-xs text-txt-secondary">
               <Building2 className="w-3.5 h-3.5" />
               <span>Khách hàng:</span>
@@ -251,6 +265,7 @@ export default function POPipelineViewPage() {
               </select>
             </div>
 
+            {/* Refresh Button */}
             <button
               onClick={() => mutate()}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-subtle border border-border text-xs font-medium text-txt-primary hover:bg-border transition-colors"
@@ -263,6 +278,7 @@ export default function POPipelineViewPage() {
         </div>
       </div>
 
+      {/* Main Flat PO Matrix Table */}
       {error ? (
         <div className="p-4 rounded bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
           <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
@@ -314,6 +330,7 @@ export default function POPipelineViewPage() {
                           isExpanded ? "bg-subtle/40" : ""
                         }`}
                       >
+                        {/* 1. Mã PO & Ngày Ký */}
                         <td className="py-3 px-3 border-r border-border">
                           <div className="space-y-0.5">
                             <span className="font-mono font-bold text-txt-primary block">
@@ -325,10 +342,12 @@ export default function POPipelineViewPage() {
                           </div>
                         </td>
 
+                        {/* 2. Khách Hàng */}
                         <td className="py-3 px-3 border-r border-border font-medium text-txt-primary">
                           {item.customerName}
                         </td>
 
+                        {/* 3. Sản Phẩm Đặt Hàng */}
                         <td className="py-3 px-3 border-r border-border">
                           <div className="space-y-0.5">
                             <span className="font-mono font-bold text-xs text-txt-primary block">
@@ -340,26 +359,32 @@ export default function POPipelineViewPage() {
                           </div>
                         </td>
 
+                        {/* 4. SL Đặt PO */}
                         <td className="py-3 px-3 text-right border-r border-border font-bold font-mono text-txt-primary">
                           {item.targetQty.toLocaleString()}
                         </td>
 
+                        {/* 5. Đã Xuất */}
                         <td className="py-3 px-3 text-right border-r border-border font-mono text-emerald-600 font-semibold">
                           {item.shippedQty.toLocaleString()}
                         </td>
 
+                        {/* 6. Còn Thiếu */}
                         <td className="py-3 px-3 text-right border-r border-border font-mono font-semibold text-txt-primary">
                           {item.remainingQty.toLocaleString()}
                         </td>
 
+                        {/* 7. Xưởng Cuối (Finish WS) - Highlighted */}
                         <td className="py-3 px-3 text-center border-r border-border bg-amber-50/30 font-bold text-amber-800 font-mono">
                           {item.finishWsCode}
                         </td>
 
+                        {/* 8. Tồn Xưởng Cuối - Highlighted */}
                         <td className="py-3 px-3 text-right border-r border-border bg-emerald-50/30 font-bold text-emerald-700 font-mono">
                           {item.lrReadyQty.toLocaleString()} pcs
                         </td>
 
+                        {/* 9. Đánh Giá Mức Độ Rủi Ro */}
                         <td className="py-3 px-3 text-center border-r border-border">
                           {item.coverageStatus === "SUFFICIENT" && (
                             <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
@@ -383,10 +408,12 @@ export default function POPipelineViewPage() {
                           )}
                         </td>
 
+                        {/* 10. Hạn Giao Hàng */}
                         <td className="py-3 px-3 text-center border-r border-border font-mono text-txt-secondary">
                           {formatDate(item.requestedDate)}
                         </td>
 
+                        {/* 11. Thao Tác */}
                         <td className="py-3 px-2 text-center text-txt-secondary">
                           {isExpanded ? (
                             <ChevronUp className="w-4 h-4 text-accent mx-auto" />
@@ -396,6 +423,7 @@ export default function POPipelineViewPage() {
                         </td>
                       </tr>
 
+                      {/* Expandable Sub-Row (Rendered in --bg-subtle) */}
                       {isExpanded && (
                         <tr className="bg-subtle/50 border-b border-border">
                           <td colSpan={11} className="p-4">

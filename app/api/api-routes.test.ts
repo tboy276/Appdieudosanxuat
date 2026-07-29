@@ -49,34 +49,38 @@ vi.mock("@/lib/redis", () => {
       eval: vi.fn(async (script: string, keys: string[], args: any[]) => {
         if (script.includes("TRANSFER_OUT") || keys.length === 7) {
           const [stateFromKey, stateToKey, openFromKey, openToKey, txFromKey, txToKey, activePairsKey] = keys;
-          const [qtyStr, actor, woId, ts, fromCode, toCode, sku, today] = args;
+          const [qtyStr, actor, woId, ts, fromCode, toCode, sku, today, isFirstStepFromStr] = args;
           const qty = Number(qtyStr);
+          const isFirstStepFrom = isFirstStepFromStr === "1" || isFirstStepFromStr === "true";
 
           const rawFrom = kvStore.get(stateFromKey);
-          let tonPhoiFrom = 0, tonDauVaoFrom = 0, tonBTPFrom = 0;
+          let tonPhoiFrom = 0, tonTPFrom = 0;
           if (rawFrom) {
             const obj = typeof rawFrom === "string" ? JSON.parse(rawFrom) : rawFrom;
             tonPhoiFrom = Number(obj.tonPhoi || 0);
-            tonDauVaoFrom = Number(obj.tonPhoiDauVao || 0);
-            tonBTPFrom = Number(obj.tonBanThanhPham || 0);
+            tonTPFrom = Number(obj.tonThanhPham || obj.tonBanThanhPham || 0);
           }
 
-          if (tonPhoiFrom < qty) return `INSUFFICIENT_PHOI|${tonPhoiFrom}`;
+          if (isFirstStepFrom) {
+            if (tonPhoiFrom < qty) return `INSUFFICIENT_STOCK|PHOI|${tonPhoiFrom}`;
+            tonPhoiFrom -= qty;
+          } else {
+            if (tonTPFrom < qty) return `INSUFFICIENT_STOCK|TP|${tonTPFrom}`;
+            tonTPFrom -= qty;
+          }
 
           const rawTo = kvStore.get(stateToKey);
-          let tonPhoiTo = 0, tonDauVaoTo = 0, tonBTPTo = 0;
+          let tonPhoiTo = 0, tonTPTo = 0;
           if (rawTo) {
             const obj = typeof rawTo === "string" ? JSON.parse(rawTo) : rawTo;
             tonPhoiTo = Number(obj.tonPhoi || 0);
-            tonDauVaoTo = Number(obj.tonPhoiDauVao || 0);
-            tonBTPTo = Number(obj.tonBanThanhPham || 0);
+            tonTPTo = Number(obj.tonThanhPham || obj.tonBanThanhPham || 0);
           }
 
-          tonPhoiFrom -= qty;
-          tonDauVaoTo += qty;
+          tonPhoiTo += qty;
 
-          kvStore.set(stateFromKey, { tonPhoi: tonPhoiFrom, tonPhoiDauVao: tonDauVaoFrom, tonBanThanhPham: tonBTPFrom });
-          kvStore.set(stateToKey, { tonPhoi: tonPhoiTo, tonPhoiDauVao: tonDauVaoTo, tonBanThanhPham: tonBTPTo });
+          kvStore.set(stateFromKey, { tonPhoi: tonPhoiFrom, tonThanhPham: tonTPFrom });
+          kvStore.set(stateToKey, { tonPhoi: tonPhoiTo, tonThanhPham: tonTPTo });
           return "OK";
         }
 
@@ -87,23 +91,22 @@ vi.mock("@/lib/redis", () => {
           const isFirstStep = isFirstStepStr === "1" || isFirstStepStr === "true";
 
           const rawState = kvStore.get(stateKey);
-          let tonPhoi = 0, tonDauVao = 0, tonBTP = 0;
+          let tonPhoi = 0, tonTP = 0;
           if (rawState) {
             const obj = typeof rawState === "string" ? JSON.parse(rawState) : rawState;
             tonPhoi = Number(obj.tonPhoi || 0);
-            tonDauVao = Number(obj.tonPhoiDauVao || 0);
-            tonBTP = Number(obj.tonBanThanhPham || 0);
+            tonTP = Number(obj.tonThanhPham || obj.tonBanThanhPham || 0);
           }
 
-          if (!isFirstStep && actualQty > tonDauVao) return `INSUFFICIENT_INPUT|${tonDauVao}`;
+          if (!isFirstStep && actualQty > tonPhoi) return `INSUFFICIENT_INPUT|${tonPhoi}`;
 
           if (isFirstStep) tonPhoi += actualQty;
           else {
-            tonDauVao -= actualQty;
-            tonBTP += actualQty;
+            tonPhoi -= actualQty;
+            tonTP += actualQty;
           }
 
-          kvStore.set(stateKey, { tonPhoi, tonPhoiDauVao: tonDauVao, tonBanThanhPham: tonBTP });
+          kvStore.set(stateKey, { tonPhoi, tonThanhPham: tonTP });
           return "OK";
         }
         return "OK";
@@ -123,6 +126,9 @@ import { GET as getProductsHandler, POST as postProductsHandler } from "./produc
 import { POST as inputProductionHandler } from "./production/input/route";
 import { POST as transferPhoiHandler } from "./production/transfer/route";
 import { GET as getUsersHandler } from "./users/route";
+import { GET as getPoPipelineHandler } from "./reports/po-pipeline/route";
+import { createPO } from "@/lib/po-wo-engine";
+import { inputProduction, transferPhoi } from "@/lib/xnt-engine";
 import { signToken, AUTH_COOKIE_NAME } from "@/lib/auth";
 
 describe("API Routes & Security Integration Tests", () => {
@@ -155,7 +161,6 @@ describe("API Routes & Security Integration Tests", () => {
   }
 
   it("1. Auth Login: reject wrong password, accept correct password and set cookie", async () => {
-    // Wrong password
     const reqFail = createMockRequest("http://localhost:3000/api/auth/login", "POST", {
       username: "admin",
       password: "WrongPassword",
@@ -163,7 +168,6 @@ describe("API Routes & Security Integration Tests", () => {
     const resFail = await loginHandler(reqFail);
     expect(resFail.status).toBe(400);
 
-    // Correct password
     const reqOk = createMockRequest("http://localhost:3000/api/auth/login", "POST", {
       username: "admin",
       password: "Admin@123",
@@ -202,12 +206,10 @@ describe("API Routes & Security Integration Tests", () => {
   it("5. Routing Validation in Transfer: reject transfer if toCode is not immediate next step in SKU routing", async () => {
     const dispatcherToken = signToken({ id: "u3", username: "dispatcher", role: "DISPATCHER" });
 
-    // Seed product with routing D1 -> CK1 -> LR
     kvStore.set("products", {
       "SKU-ROUTE": { sku: "SKU-ROUTE", nameVi: "Thân Máy", routing: ["D1", "CK1", "LR"], unit: "Cái" },
     });
 
-    // Attempt transfer from D1 straight to LR (invalid, skipping CK1)
     const reqInvalid = createMockRequest(
       "http://localhost:3000/api/production/transfer",
       "POST",
@@ -219,5 +221,46 @@ describe("API Routes & Security Integration Tests", () => {
 
     const json = await resInvalid.json();
     expect(json.error).toContain("không phải là công đoạn kế tiếp");
+  });
+
+  it("6. PO Pipeline Endpoint: transitions coverageStatus correctly SHORTAGE -> WIP_COVERED -> SUFFICIENT", async () => {
+    const token = signToken({ id: "u1", username: "admin", role: "ADMIN" });
+
+    kvStore.set("products", {
+      "SKU-PIPE": { sku: "SKU-PIPE", nameVi: "Trục Chuyển", routing: ["D1", "LR"], unit: "Cái" },
+    });
+
+    const po = await createPO({
+      poNumber: "PO-PIPE-01",
+      customerName: "Khách Hàng X",
+      sku: "SKU-PIPE",
+      productNameVi: "Trục Chuyển",
+      qty: 1000,
+      requestedDate: "2026-09-01",
+    });
+
+    // 1. Initial State -> SHORTAGE
+    const req1 = createMockRequest("http://localhost:3000/api/reports/po-pipeline", "GET", undefined, token);
+    const res1 = await getPoPipelineHandler(req1);
+    expect(res1.status).toBe(200);
+    const data1 = await res1.json();
+    const poItem1 = data1.find((i: any) => i.poId === po.poId);
+    expect(poItem1.coverageStatus).toBe("SHORTAGE");
+
+    // 2. Input 1000 phoi at D1 -> WIP_COVERED
+    await inputProduction("D1", "SKU-PIPE", 1000, "worker1", true, "WO-PIPE-1");
+    const res2 = await getPoPipelineHandler(req1);
+    const data2 = await res2.json();
+    const poItem2 = data2.find((i: any) => i.poId === po.poId);
+    expect(poItem2.coverageStatus).toBe("WIP_COVERED");
+
+    // 3. Transfer 1000 phoi D1 -> LR and produce 1000 TP at LR -> SUFFICIENT
+    await transferPhoi("D1", "LR", "SKU-PIPE", 1000, "dispatcher1", true, "WO-PIPE-1");
+    await inputProduction("LR", "SKU-PIPE", 1000, "worker2", false, "WO-PIPE-1");
+
+    const res3 = await getPoPipelineHandler(req1);
+    const data3 = await res3.json();
+    const poItem3 = data3.find((i: any) => i.poId === po.poId);
+    expect(poItem3.coverageStatus).toBe("SUFFICIENT");
   });
 });

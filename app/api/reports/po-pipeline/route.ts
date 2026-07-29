@@ -24,19 +24,18 @@ export interface POPipelineItem {
   targetQty: number;
   shippedQty: number;
   remainingQty: number;
+  finishWsCode: string;
   lrReadyQty: number;
   totalPhoiWIP: number;
   totalThanhPhamWIP: number;
+  totalStock: number;
   coverageStatus: CoverageStatus;
+  poStatus: string;
+  createdAt: string;
+  requestedDate: string;
   routing: string[];
   steps: PipelineStep[];
   linkedWos: { woId: string; status: string }[];
-}
-
-export interface CustomerPipelineGroup {
-  customerName: string;
-  activePoCount: number;
-  items: POPipelineItem[];
 }
 
 export async function GET(req: NextRequest) {
@@ -61,7 +60,7 @@ export async function GET(req: NextRequest) {
       let totalThanhPhamWIP = 0;
       let lrReadyQty = 0;
 
-      const lrCode = routing.length > 0 ? routing[routing.length - 1] : "LR";
+      const finishWsCode = routing.length > 0 ? routing[routing.length - 1] : "LR";
 
       // Linked WOs for this PO
       const linkedWos = allWos.filter((w) => w.poId === po.poId);
@@ -76,7 +75,7 @@ export async function GET(req: NextRequest) {
         totalPhoiWIP += tonPhoi;
         totalThanhPhamWIP += tonThanhPham;
 
-        if (wcCode === lrCode) {
+        if (wcCode === finishWsCode) {
           lrReadyQty = tonThanhPham;
         }
 
@@ -105,12 +104,12 @@ export async function GET(req: NextRequest) {
       }
 
       // Determine coverageStatus
-      const totalAvailableInPipeline = totalPhoiWIP + totalThanhPhamWIP;
+      const totalStock = totalPhoiWIP + totalThanhPhamWIP;
       let coverageStatus: CoverageStatus = "SHORTAGE";
 
       if (lrReadyQty >= remainingQty) {
         coverageStatus = "SUFFICIENT";
-      } else if (totalAvailableInPipeline >= remainingQty) {
+      } else if (totalStock >= remainingQty) {
         coverageStatus = "WIP_COVERED";
       } else {
         coverageStatus = "SHORTAGE";
@@ -125,34 +124,22 @@ export async function GET(req: NextRequest) {
         targetQty: po.qty,
         shippedQty: po.shippedQty || 0,
         remainingQty,
+        finishWsCode,
         lrReadyQty,
         totalPhoiWIP,
         totalThanhPhamWIP,
+        totalStock,
         coverageStatus,
+        poStatus: po.status,
+        createdAt: po.createdAt,
+        requestedDate: po.requestedDate,
         routing,
         steps,
         linkedWos: linkedWos.map((w) => ({ woId: w.woId, status: w.status })),
       });
     }
 
-    // Group items by Customer Name
-    const customerMap: Record<string, POPipelineItem[]> = {};
-    for (const item of pipelineItems) {
-      if (!customerMap[item.customerName]) {
-        customerMap[item.customerName] = [];
-      }
-      customerMap[item.customerName].push(item);
-    }
-
-    const groupedResponse: CustomerPipelineGroup[] = Object.keys(customerMap).map(
-      (customerName) => ({
-        customerName,
-        activePoCount: customerMap[customerName].length,
-        items: customerMap[customerName],
-      })
-    );
-
-    return NextResponse.json(groupedResponse);
+    return NextResponse.json(pipelineItems);
   } catch (err) {
     return handleApiError(err, "Không thể tải báo cáo dòng chảy PO & WIP.");
   }

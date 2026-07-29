@@ -58,6 +58,7 @@ export default function ProductionInputPage() {
   const currentWcObj = workCenters.find((w) => w.code === selectedWc);
   const isFirstStepWc = Boolean(currentWcObj?.isFirstStep);
 
+  // Filter WOs matching selected WorkCenter
   const availableWOs = wos.filter((wo) => {
     if (!selectedWc) return false;
     const step = wo.steps?.find((s) => s.code === selectedWc);
@@ -67,6 +68,7 @@ export default function ProductionInputPage() {
   const selectedWoObj = wos.find((w) => w.woId === selectedWoId);
   const currentStep = selectedWoObj?.steps?.find((s) => s.code === selectedWc);
 
+  // Find stock state for (selectedWc, selectedWoObj.sku) from XNT data
   const currentXNT = xntData.find(
     (x) => x.wcCode === selectedWc && x.sku === selectedWoObj?.sku
   );
@@ -105,6 +107,7 @@ export default function ProductionInputPage() {
       const data = await res.json();
 
       if (!res.ok) {
+        // Display exact server error message
         setErrorMsg(data.error || "Nhập sản lượng thất bại.");
         setIsSubmitting(false);
         return;
@@ -114,6 +117,7 @@ export default function ProductionInputPage() {
       setActualQty("");
       setSelectedWoId("");
 
+      // Refresh data & Mutate SWR global cache keys
       await Promise.all([
         mutate("/api/xnt"),
         mutate("/api/wo"),
@@ -128,6 +132,7 @@ export default function ProductionInputPage() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
+      {/* Title & Instructions */}
       <div className="p-4 rounded bg-canvas border border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Factory className="w-5 h-5 text-txt-secondary" />
@@ -142,6 +147,7 @@ export default function ProductionInputPage() {
         </button>
       </div>
 
+      {/* Messages */}
       {errorMsg && (
         <div className="p-3 rounded bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -156,7 +162,9 @@ export default function ProductionInputPage() {
         </div>
       )}
 
+      {/* Input Form */}
       <form onSubmit={handleSubmit} className="p-6 bg-canvas border border-border rounded space-y-5">
+        {/* Step 1: Select Work Center */}
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-txt-secondary flex items-center gap-1.5">
             <Factory className="w-3.5 h-3.5" />
@@ -179,6 +187,7 @@ export default function ProductionInputPage() {
           </select>
         </div>
 
+        {/* Step 2: Select Work Order (WO) */}
         {selectedWc && (
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-txt-secondary flex items-center gap-1.5">
@@ -209,6 +218,7 @@ export default function ProductionInputPage() {
           </div>
         )}
 
+        {/* Progress & Availability Card */}
         {selectedWoObj && currentStep && (
           <div className="p-4 rounded bg-subtle border border-border space-y-2 text-xs">
             <div className="flex items-center justify-between border-b border-border pb-2">
@@ -235,6 +245,7 @@ export default function ProductionInputPage() {
           </div>
         )}
 
+        {/* Step 3: Input Actual Quantity */}
         {selectedWoId && (
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-txt-secondary">
@@ -258,6 +269,7 @@ export default function ProductionInputPage() {
           </div>
         )}
 
+        {/* Submit Button */}
         <button
           type="submit"
           disabled={isSubmitting || !selectedWoId || inputQtyNum <= 0 || isExceedingInputStock}

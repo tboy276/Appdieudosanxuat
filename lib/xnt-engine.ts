@@ -355,6 +355,7 @@ export async function recordShipmentXNT(
   const snapshotKey = getOpeningSnapshotKey(wcCode, sku, today);
   const txKey = getTxLogKey(wcCode, sku, today);
 
+  // Lazy snapshot
   const existsSnapshot = await redis.exists(snapshotKey);
   const rawState = await redis.get<StockState | string>(stateKey);
 

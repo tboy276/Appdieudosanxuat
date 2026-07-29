@@ -43,7 +43,7 @@ import { StockState } from "./types";
 import { upsertProduct } from "./products";
 import { redis } from "./redis";
 
-describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
+describe("lib/po-wo-engine.ts - Order & Work Order Engine (Dual-State Model)", () => {
   beforeEach(() => {
     (redis as any).__reset();
     vi.clearAllMocks();
@@ -76,11 +76,11 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
     ]);
   });
 
-  it("Case 2: computeWOPlan with existing tonBanThanhPham=20 at final step (LR) should reduce plannedQty at final step", () => {
+  it("Case 2: computeWOPlan with existing tonThanhPham=20 at final step (LR) should reduce plannedQty at final step", () => {
     const routing = ["D1", "CK1", "MNL", "LR"];
     const targetQty = 100;
     const stockByCode: Record<string, StockState> = {
-      LR: { tonPhoi: 0, tonPhoiDauVao: 0, tonBanThanhPham: 20 },
+      LR: { tonPhoi: 0, tonThanhPham: 20 },
     };
 
     const plan = computeWOPlan("SKU-TEST-02", routing, targetQty, stockByCode, scrapRates);
@@ -98,11 +98,11 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
     ]);
   });
 
-  it("Case 3: computeWOPlan with existing tonPhoiDauVao=50 at middle step (CK1) should reduce plannedQty for preceding steps (D1) only", () => {
+  it("Case 3: computeWOPlan with existing tonPhoi=50 at middle step (CK1) should reduce plannedQty for preceding steps (D1) only", () => {
     const routing = ["D1", "CK1", "MNL", "LR"];
     const targetQty = 100;
     const stockByCode: Record<string, StockState> = {
-      CK1: { tonPhoi: 0, tonPhoiDauVao: 50, tonBanThanhPham: 0 },
+      CK1: { tonPhoi: 50, tonThanhPham: 0 },
     };
 
     const plan = computeWOPlan("SKU-TEST-03", routing, targetQty, stockByCode, scrapRates);
@@ -111,7 +111,7 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
     // LR: 100
     // MNL: 104
     // CK1: 107
-    // D1: need = max(0, 107 - 50 - 0) = 57 -> ceil(57 / 0.90) = 64
+    // D1: need = max(0, 107 - 50) = 57 -> ceil(57 / 0.90) = 64
     expect(plan).toEqual([
       { code: "D1", plannedQty: 64 },
       { code: "CK1", plannedQty: 107 },
@@ -121,7 +121,6 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
   });
 
   it("Case 4: closeWO should reject when final step is NOT DONE, and succeed when final step IS DONE", async () => {
-    // 1. Setup Product with routing
     await upsertProduct({
       sku: "SKU-VAL-01",
       nameVi: "Van An Toàn",
@@ -131,7 +130,6 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
       updatedAt: "",
     });
 
-    // 2. Create PO & WO
     const po = await createPO({
       poNumber: "PO-VAL-01",
       customerName: "Khách Hàng A",
@@ -143,22 +141,18 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
 
     const wo = await createWO(po.poId, "admin");
 
-    // 3. Attempt closeWO when steps are still PENDING
     await expect(closeWO(wo.woId, "admin")).rejects.toThrow(
       "Không thể đóng WO: Bước lắp ráp cuối cùng (LR) chưa hoàn thành."
     );
 
-    // 4. Progress step 1 (D1) and step 2 (LR)
     await recordWOProgress(wo.woId, "D1", 60, "worker1");
     await recordWOProgress(wo.woId, "LR", 50, "worker2");
 
-    // 5. Attempt closeWO again -> should succeed
     const closedWO = await closeWO(wo.woId, "admin");
     expect(closedWO.status).toBe("READY_TO_SHIP");
   });
 
   it("Case 5: recordShipment partial shipment should set po.status = PARTIALLY_SHIPPED, then COMPLETED upon full shipment", async () => {
-    // 1. Setup Product, PO, WO
     await upsertProduct({
       sku: "SKU-SHIP-01",
       nameVi: "Trục Nhông",
@@ -179,12 +173,10 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
 
     const wo = await createWO(po.poId, "admin");
 
-    // Progress and close WO
     await recordWOProgress(wo.woId, "R1", 110, "worker1");
     await recordWOProgress(wo.woId, "LR", 100, "worker2");
     await closeWO(wo.woId, "admin");
 
-    // 2. Partial Shipment (40 pcs)
     await recordShipment([wo.woId], { [wo.woId]: 40 }, "dispatcher1");
 
     const updatedWo1 = (await redis.get(`wo:${wo.woId}`)) as any;
@@ -195,7 +187,6 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine", () => {
     expect(updatedPo1.shippedQty).toBe(40);
     expect(updatedPo1.status).toBe("PARTIALLY_SHIPPED");
 
-    // 3. Complete Remaining Shipment (60 pcs)
     await recordShipment([wo.woId], { [wo.woId]: 60 }, "dispatcher1");
 
     const updatedWo2 = (await redis.get(`wo:${wo.woId}`)) as any;

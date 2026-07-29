@@ -55,20 +55,25 @@ export default function PhoiTransferPage() {
   const fromWcObj = workCenters.find((w) => w.code === fromCode);
   const isFirstStepFrom = Boolean(fromWcObj?.isFirstStep);
 
+  // Filter XNT items that have available stock to transfer
+  // If first step: tonPhoi > 0. If processing step: tonThanhPham > 0.
   const activeStockItems = xntData.filter((x) => {
     const wc = workCenters.find((w) => w.code === x.wcCode);
     if (wc?.isFirstStep) return x.closing?.tonPhoi > 0;
     return x.closing?.tonThanhPham > 0 || x.closing?.tonPhoi > 0;
   });
 
+  // Available source workcenters having stock > 0
   const availableSourceCodes = Array.from(
     new Set(activeStockItems.map((x) => x.wcCode))
   );
 
+  // Available SKUs at selected fromCode
   const availableSkusAtSource = activeStockItems
     .filter((x) => x.wcCode === fromCode)
     .map((x) => x.sku);
 
+  // Find selected XNT item for (fromCode, selectedSku)
   const selectedXNT = xntData.find(
     (x) => x.wcCode === fromCode && x.sku === selectedSku
   );
@@ -79,6 +84,7 @@ export default function PhoiTransferPage() {
 
   const stockLabel = isFirstStepFrom ? "Phôi" : "Thành Phẩm";
 
+  // Derive destination workcenter automatically from Product.routing
   const selectedProduct = products.find((p) => p.sku === selectedSku);
   let suggestedToCode = "";
   if (selectedProduct && selectedProduct.routing && fromCode) {
@@ -118,6 +124,7 @@ export default function PhoiTransferPage() {
       const data = await res.json();
 
       if (!res.ok) {
+        // Display exact server error message
         setErrorMsg(data.error || "Xuất chuyển thất bại.");
         setIsSubmitting(false);
         return;
@@ -127,6 +134,7 @@ export default function PhoiTransferPage() {
       setTransferQty("");
       setSelectedSku("");
 
+      // Mutate SWR global cache keys
       await Promise.all([
         mutate("/api/xnt"),
         mutate("/api/wo"),
@@ -141,6 +149,7 @@ export default function PhoiTransferPage() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
+      {/* Header */}
       <div className="p-4 rounded bg-canvas border border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ArrowLeftRight className="w-5 h-5 text-txt-secondary" />
@@ -155,6 +164,7 @@ export default function PhoiTransferPage() {
         </button>
       </div>
 
+      {/* Messages */}
       {errorMsg && (
         <div className="p-3 rounded bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -169,7 +179,9 @@ export default function PhoiTransferPage() {
         </div>
       )}
 
+      {/* Form */}
       <form onSubmit={handleSubmit} className="p-6 bg-canvas border border-border rounded space-y-5">
+        {/* Step 1: Select Source Work Center */}
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-txt-secondary flex items-center gap-1.5">
             <Factory className="w-3.5 h-3.5" />
@@ -195,6 +207,7 @@ export default function PhoiTransferPage() {
           </select>
         </div>
 
+        {/* Step 2: Select SKU */}
         {fromCode && (
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-txt-secondary flex items-center gap-1.5">
@@ -226,6 +239,7 @@ export default function PhoiTransferPage() {
           </div>
         )}
 
+        {/* Step 3: Auto-suggested Destination Work Center */}
         {selectedSku && (
           <div className="p-4 rounded bg-subtle border border-border space-y-2">
             <div className="flex items-center justify-between text-xs">
@@ -253,6 +267,7 @@ export default function PhoiTransferPage() {
           </div>
         )}
 
+        {/* Step 4: Transfer Quantity */}
         {selectedSku && suggestedToCode && (
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-txt-secondary">
@@ -277,6 +292,7 @@ export default function PhoiTransferPage() {
           </div>
         )}
 
+        {/* Submit Button */}
         <button
           type="submit"
           disabled={isSubmitting || !suggestedToCode || qtyNum <= 0 || isExceedingStock}

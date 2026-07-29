@@ -52,26 +52,33 @@ export default function PhoiTransferPage() {
     loadData();
   }, []);
 
-  // Filter XNT items that have available tonPhoi > 0
-  const activePhoiItems = xntData.filter((x) => x.closing?.tonPhoi > 0);
+  const fromWcObj = workCenters.find((w) => w.code === fromCode);
+  const isFirstStepFrom = Boolean(fromWcObj?.isFirstStep);
 
-  // Available source workcenters having tonPhoi > 0
+  const activeStockItems = xntData.filter((x) => {
+    const wc = workCenters.find((w) => w.code === x.wcCode);
+    if (wc?.isFirstStep) return x.closing?.tonPhoi > 0;
+    return x.closing?.tonThanhPham > 0 || x.closing?.tonPhoi > 0;
+  });
+
   const availableSourceCodes = Array.from(
-    new Set(activePhoiItems.map((x) => x.wcCode))
+    new Set(activeStockItems.map((x) => x.wcCode))
   );
 
-  // Available SKUs at selected fromCode
-  const availableSkusAtSource = activePhoiItems
+  const availableSkusAtSource = activeStockItems
     .filter((x) => x.wcCode === fromCode)
     .map((x) => x.sku);
 
-  // Find selected XNT item for (fromCode, selectedSku)
-  const selectedXNT = activePhoiItems.find(
+  const selectedXNT = xntData.find(
     (x) => x.wcCode === fromCode && x.sku === selectedSku
   );
-  const maxAvailablePhoi = selectedXNT?.closing?.tonPhoi || 0;
 
-  // Derive destination workcenter automatically from Product.routing
+  const maxAvailableStock = isFirstStepFrom
+    ? selectedXNT?.closing?.tonPhoi || 0
+    : selectedXNT?.closing?.tonThanhPham || 0;
+
+  const stockLabel = isFirstStepFrom ? "Phôi" : "Thành Phẩm";
+
   const selectedProduct = products.find((p) => p.sku === selectedSku);
   let suggestedToCode = "";
   if (selectedProduct && selectedProduct.routing && fromCode) {
@@ -82,7 +89,7 @@ export default function PhoiTransferPage() {
   }
 
   const qtyNum = Number(transferQty) || 0;
-  const isExceedingStock = qtyNum > maxAvailablePhoi;
+  const isExceedingStock = qtyNum > maxAvailableStock;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -111,17 +118,15 @@ export default function PhoiTransferPage() {
       const data = await res.json();
 
       if (!res.ok) {
-        // Display exact server error message
-        setErrorMsg(data.error || "Xuất chuyển phôi thất bại.");
+        setErrorMsg(data.error || "Xuất chuyển thất bại.");
         setIsSubmitting(false);
         return;
       }
 
-      setSuccessMsg(`Xuất chuyển phôi thành công! Đã chuyển ${qtyNum} pcs từ ${fromCode} sang ${suggestedToCode}.`);
+      setSuccessMsg(`Xuất chuyển thành công! Đã chuyển ${qtyNum} pcs từ ${fromCode} sang ${suggestedToCode}.`);
       setTransferQty("");
       setSelectedSku("");
 
-      // Mutate SWR global cache keys
       await Promise.all([
         mutate("/api/xnt"),
         mutate("/api/wo"),
@@ -136,11 +141,10 @@ export default function PhoiTransferPage() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
-      {/* Header */}
       <div className="p-4 rounded bg-canvas border border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ArrowLeftRight className="w-5 h-5 text-txt-secondary" />
-          <h2 className="text-sm font-semibold text-txt-primary">Xuất Chuyển Phôi Sang Xưởng Kế Tiếp</h2>
+          <h2 className="text-sm font-semibold text-txt-primary">Xuất Chuyển Sang Xưởng Kế Tiếp</h2>
         </div>
         <button
           onClick={loadData}
@@ -151,7 +155,6 @@ export default function PhoiTransferPage() {
         </button>
       </div>
 
-      {/* Messages */}
       {errorMsg && (
         <div className="p-3 rounded bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
           <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
@@ -166,13 +169,11 @@ export default function PhoiTransferPage() {
         </div>
       )}
 
-      {/* Form */}
       <form onSubmit={handleSubmit} className="p-6 bg-canvas border border-border rounded space-y-5">
-        {/* Step 1: Select Source Work Center */}
         <div className="space-y-1.5">
           <label className="text-xs font-medium text-txt-secondary flex items-center gap-1.5">
             <Factory className="w-3.5 h-3.5" />
-            <span>1. Chọn Xưởng Nguồn (chỉ hiện xưởng đang có tồn phôi) (*):</span>
+            <span>1. Chọn Xưởng Nguồn (*):</span>
           </label>
           <select
             value={fromCode}
@@ -184,17 +185,16 @@ export default function PhoiTransferPage() {
           >
             <option value="">-- Chọn Xưởng Nguồn --</option>
             {workCenters.map((wc) => {
-              const hasPhoi = availableSourceCodes.includes(wc.code);
+              const hasStock = availableSourceCodes.includes(wc.code);
               return (
-                <option key={wc.code} value={wc.code} disabled={!hasPhoi}>
-                  {wc.code} - {wc.name} {hasPhoi ? "(Có phôi sẵn)" : "(Không có phôi)"}
+                <option key={wc.code} value={wc.code} disabled={!hasStock}>
+                  {wc.code} - {wc.name} {hasStock ? "(Có hàng sẵn)" : "(Không có hàng)"}
                 </option>
               );
             })}
           </select>
         </div>
 
-        {/* Step 2: Select SKU */}
         {fromCode && (
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-txt-secondary flex items-center gap-1.5">
@@ -203,7 +203,7 @@ export default function PhoiTransferPage() {
             </label>
             {availableSkusAtSource.length === 0 ? (
               <p className="text-xs text-txt-secondary py-2 italic">
-                Xưởng {fromCode} hiện chưa có phôi sẵn có cho bất kỳ SKU nào.
+                Xưởng {fromCode} hiện chưa có sẵn tồn kho cho bất kỳ SKU nào.
               </p>
             ) : (
               <select
@@ -213,10 +213,11 @@ export default function PhoiTransferPage() {
               >
                 <option value="">-- Chọn SKU --</option>
                 {availableSkusAtSource.map((sku) => {
-                  const x = activePhoiItems.find((item) => item.wcCode === fromCode && item.sku === sku);
+                  const x = xntData.find((item) => item.wcCode === fromCode && item.sku === sku);
+                  const available = isFirstStepFrom ? x?.closing?.tonPhoi || 0 : x?.closing?.tonThanhPham || 0;
                   return (
                     <option key={sku} value={sku}>
-                      {sku} | Tồn Phôi Sẵn Có: {x?.closing?.tonPhoi || 0} pcs
+                      {sku} | Tồn {stockLabel} Sẵn Có: {available} pcs
                     </option>
                   );
                 })}
@@ -225,7 +226,6 @@ export default function PhoiTransferPage() {
           </div>
         )}
 
-        {/* Step 3: Auto-suggested Destination Work Center */}
         {selectedSku && (
           <div className="p-4 rounded bg-subtle border border-border space-y-2">
             <div className="flex items-center justify-between text-xs">
@@ -253,16 +253,15 @@ export default function PhoiTransferPage() {
           </div>
         )}
 
-        {/* Step 4: Transfer Quantity */}
         {selectedSku && suggestedToCode && (
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-txt-secondary">
-              4. Nhập Số Lượng Phôi Xuất Chuyển (Tối đa {maxAvailablePhoi} pcs) (*):
+              4. Nhập Số Lượng Xuất Chuyển (Tối đa {maxAvailableStock} pcs {stockLabel}) (*):
             </label>
             <input
               type="number"
               min="1"
-              max={maxAvailablePhoi}
+              max={maxAvailableStock}
               required
               placeholder="Nhập số lượng pcs..."
               value={transferQty}
@@ -272,13 +271,12 @@ export default function PhoiTransferPage() {
             {isExceedingStock && (
               <p className="text-xs text-warning flex items-center gap-1 font-medium mt-1">
                 <AlertTriangle className="w-3.5 h-3.5" />
-                <span>Số lượng chuyển vượt quá tồn phôi tại {fromCode} (chỉ có sẵn {maxAvailablePhoi} pcs).</span>
+                <span>Số lượng chuyển vượt quá tồn kho tại {fromCode} (chỉ có sẵn {maxAvailableStock} pcs {stockLabel}).</span>
               </p>
             )}
           </div>
         )}
 
-        {/* Submit Button */}
         <button
           type="submit"
           disabled={isSubmitting || !suggestedToCode || qtyNum <= 0 || isExceedingStock}
@@ -288,7 +286,7 @@ export default function PhoiTransferPage() {
             "Đang xử lý..."
           ) : (
             <>
-              <span>Xác Nhận Xuất Chuyển Phôi</span>
+              <span>Xác Nhận Xuất Chuyển</span>
               <ArrowRight className="w-4 h-4" />
             </>
           )}

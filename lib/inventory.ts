@@ -25,22 +25,20 @@ export async function getStockState(wcCode: string, sku: string): Promise<StockS
   const data = await redis.get<StockState | string>(key);
 
   if (!data) {
-    return { tonPhoi: 0, tonPhoiDauVao: 0, tonBanThanhPham: 0 };
+    return { tonPhoi: 0, tonThanhPham: 0 };
   }
 
   if (typeof data === "string") {
     const parsed = JSON.parse(data) as Partial<StockState>;
     return {
       tonPhoi: Number(parsed.tonPhoi || 0),
-      tonPhoiDauVao: Number(parsed.tonPhoiDauVao || 0),
-      tonBanThanhPham: Number(parsed.tonBanThanhPham || 0),
+      tonThanhPham: Number(parsed.tonThanhPham || 0),
     };
   }
 
   return {
     tonPhoi: Number(data.tonPhoi || 0),
-    tonPhoiDauVao: Number(data.tonPhoiDauVao || 0),
-    tonBanThanhPham: Number(data.tonBanThanhPham || 0),
+    tonThanhPham: Number(data.tonThanhPham || 0),
   };
 }
 
@@ -61,8 +59,7 @@ export async function declareOpeningStock(
 
   const cleanState: StockState = {
     tonPhoi: Math.max(0, Number(state.tonPhoi || 0)),
-    tonPhoiDauVao: Math.max(0, Number(state.tonPhoiDauVao || 0)),
-    tonBanThanhPham: Math.max(0, Number(state.tonBanThanhPham || 0)),
+    tonThanhPham: Math.max(0, Number(state.tonThanhPham || 0)),
   };
 
   const today = customDate || getTodayDateString();

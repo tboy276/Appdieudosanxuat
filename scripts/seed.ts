@@ -2,7 +2,7 @@ import { Redis } from "@upstash/redis";
 import bcrypt from "bcryptjs";
 import fs from "fs";
 import path from "path";
-import { WorkCenter, User } from "../types";
+import { WorkCenter, User } from "../lib/types";
 
 // Load .env.local manually if running via CLI / tsx
 const envPath = path.resolve(process.cwd(), ".env.local");
@@ -38,17 +38,21 @@ const WORK_CENTERS: WorkCenter[] = [
 ];
 
 async function seed() {
-  console.log("🌱 Starting MES-Lite Database Seed...");
+  console.log("🌱 Starting MES-Lite Database Seed (Dual-State Model)...");
 
   if (!process.env.UPSTASH_REDIS_REST_URL || process.env.UPSTASH_REDIS_REST_URL.includes("dummy")) {
     console.warn("⚠️ Warning: UPSTASH_REDIS_REST_URL is missing or using placeholder in .env.local.");
   }
 
-  // 1. Seed Work Centers
+  // 1. Flush active inventory pairs for clean Dual-State schema
+  await redis.del("active_inventory_pairs");
+  console.log(`🧹 Flushed old "active_inventory_pairs" key.`);
+
+  // 2. Seed Work Centers
   await redis.set("workcenters", WORK_CENTERS);
   console.log(`✅ Seeded ${WORK_CENTERS.length} work centers into key "workcenters".`);
 
-  // 2. Seed Admin User
+  // 3. Seed Admin User
   const passwordHash = await bcrypt.hash("Admin@123", 10);
   const adminUser: User = {
     id: "usr_admin_001",

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
-import { recordShipment, ShipmentRecord } from "@/lib/po-wo-engine";
+import { recordShipment, getWO, ShipmentRecord } from "@/lib/po-wo-engine";
+import { recordShipmentXNT } from "@/lib/xnt-engine";
 import { authorize, handleApiError } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
@@ -43,6 +44,18 @@ export async function POST(req: NextRequest) {
     }
 
     const record = await recordShipment(woIds, qtyByWoId, user!.username, shipmentMeta);
+
+    // Deduct tonThanhPham at final workshop LR for each shipped WO
+    for (const woId of woIds) {
+      const shipQty = Number(qtyByWoId[woId] || 0);
+      if (shipQty <= 0) continue;
+      const wo = await getWO(woId);
+      if (!wo) continue;
+
+      const lastStepCode = wo.routing[wo.routing.length - 1] || "LR";
+      await recordShipmentXNT(lastStepCode, wo.sku, shipQty, user!.username, woId);
+    }
+
     return NextResponse.json(record);
   } catch (err) {
     return handleApiError(err, "Ghi nhận xuất hàng thất bại.");

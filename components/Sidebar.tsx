@@ -14,6 +14,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Factory,
+  Workflow,
 } from "lucide-react";
 import { UserRole } from "@/lib/types";
 
@@ -30,6 +31,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { label: "Bảng Điều Độ XNT", href: "/dashboard/xnt", icon: BarChart3 },
+  { label: "Tiến Độ PO & WIP", href: "/dashboard/pipeline", icon: Workflow },
   { label: "Danh Mục Sản Phẩm", href: "/dashboard/products", icon: Package },
   { label: "Đơn Hàng PO", href: "/dashboard/po", icon: FileText },
   { label: "Lệnh Sản Xuất WO", href: "/dashboard/wo", icon: Layers },

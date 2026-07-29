@@ -2,7 +2,13 @@ import { redis } from "./redis";
 import { StockState } from "./types";
 import { getStockState, getTodayDateString, getStockStateKey, getOpeningSnapshotKey } from "./inventory";
 
-export type TxType = "PRODUCE_PHOI" | "TRANSFER_OUT" | "TRANSFER_IN" | "CONSUME_PHOI" | "OUTPUT_BTP";
+export type TxType =
+  | "PRODUCE_PHOI"
+  | "TRANSFER_OUT_PHOI"
+  | "TRANSFER_OUT_TP"
+  | "TRANSFER_IN_PHOI"
+  | "PRODUCE_TP"
+  | "SHIPMENT_OUT_TP";
 
 export interface TxLogEntry {
   ts: string;
@@ -17,8 +23,7 @@ export interface TxLogEntry {
 
 export interface StockBreakdown {
   tonPhoi: number;
-  tonPhoiDauVao: number;
-  tonBanThanhPham: number;
+  tonThanhPham: number;
 }
 
 export interface XNTReportItem {
@@ -38,7 +43,7 @@ export function getTxLogKey(wcCode: string, sku: string, dateStr: string): strin
 
 /**
  * LUA SCRIPT for transferPhoi:
- * Atomic check tonPhoi >= qty, lazy snapshot creation for both workshops, state mutation, and log writing.
+ * Transfers Phoi (if from first-step) or Thành Phẩm (if from processing) to recipient's Phoi.
  */
 const TRANSFER_PHOI_LUA = `
 local qty = tonumber(ARGV[1])
@@ -49,42 +54,49 @@ local fromCode = ARGV[5]
 local toCode = ARGV[6]
 local sku = ARGV[7]
 local today = ARGV[8]
+local isFirstStepFrom = (ARGV[9] == "1" or ARGV[9] == "true")
 
 -- 1. Read stateFrom
 local rawFrom = redis.call('GET', KEYS[1])
 local tonPhoiFrom = 0
-local tonDauVaoFrom = 0
-local tonBTPFrom = 0
+local tonTPFrom = 0
 if rawFrom then
     local obj = cjson.decode(rawFrom)
     tonPhoiFrom = tonumber(obj.tonPhoi or 0)
-    tonDauVaoFrom = tonumber(obj.tonPhoiDauVao or 0)
-    tonBTPFrom = tonumber(obj.tonBanThanhPham or 0)
+    tonTPFrom = tonumber(obj.tonThanhPham or obj.tonBanThanhPham or 0)
 end
 
--- 2. Check stock condition
-if tonPhoiFrom < qty then
-    return "INSUFFICIENT_PHOI|" .. tostring(tonPhoiFrom)
+-- 2. Check stock condition & Mutate From State
+local txFromType = ""
+if isFirstStepFrom then
+    if tonPhoiFrom < qty then
+        return "INSUFFICIENT_STOCK|PHOI|" .. tostring(tonPhoiFrom)
+    end
+    tonPhoiFrom = tonPhoiFrom - qty
+    txFromType = "TRANSFER_OUT_PHOI"
+else
+    if tonTPFrom < qty then
+        return "INSUFFICIENT_STOCK|TP|" .. tostring(tonTPFrom)
+    end
+    tonTPFrom = tonTPFrom - qty
+    txFromType = "TRANSFER_OUT_TP"
 end
 
 -- 3. Read stateTo
 local rawTo = redis.call('GET', KEYS[2])
 local tonPhoiTo = 0
-local tonDauVaoTo = 0
-local tonBTPTo = 0
+local tonTPTo = 0
 if rawTo then
     local obj = cjson.decode(rawTo)
     tonPhoiTo = tonumber(obj.tonPhoi or 0)
-    tonDauVaoTo = tonumber(obj.tonPhoiDauVao or 0)
-    tonBTPTo = tonumber(obj.tonBanThanhPham or 0)
+    tonTPTo = tonumber(obj.tonThanhPham or obj.tonBanThanhPham or 0)
 end
 
 -- 4. Lazy Opening Snapshot for From
 if redis.call('EXISTS', KEYS[3]) == 0 then
     local openObj = {
-        tonPhoi = tonPhoiFrom,
-        tonPhoiDauVao = tonDauVaoFrom,
-        tonBanThanhPham = tonBTPFrom,
+        tonPhoi = tonPhoiFrom + (isFirstStepFrom and qty or 0),
+        tonThanhPham = tonTPFrom + (not isFirstStepFrom and qty or 0),
         declaredBy = "system_lazy",
         declaredAt = ts
     }
@@ -95,20 +107,18 @@ end
 if redis.call('EXISTS', KEYS[4]) == 0 then
     local openObj = {
         tonPhoi = tonPhoiTo,
-        tonPhoiDauVao = tonDauVaoTo,
-        tonBanThanhPham = tonBTPTo,
+        tonThanhPham = tonTPTo,
         declaredBy = "system_lazy",
         declaredAt = ts
     }
     redis.call('SET', KEYS[4], cjson.encode(openObj))
 end
 
--- 6. Mutate States
-tonPhoiFrom = tonPhoiFrom - qty
-tonDauVaoTo = tonDauVaoTo + qty
+-- 6. Mutate Recipient State (Always increases Phoi at recipient)
+tonPhoiTo = tonPhoiTo + qty
 
-local newFromObj = { tonPhoi = tonPhoiFrom, tonPhoiDauVao = tonDauVaoFrom, tonBanThanhPham = tonBTPFrom }
-local newToObj = { tonPhoi = tonPhoiTo, tonPhoiDauVao = tonDauVaoTo, tonBanThanhPham = tonBTPTo }
+local newFromObj = { tonPhoi = tonPhoiFrom, tonThanhPham = tonTPFrom }
+local newToObj = { tonPhoi = tonPhoiTo, tonThanhPham = tonTPTo }
 
 redis.call('SET', KEYS[1], cjson.encode(newFromObj))
 redis.call('SET', KEYS[2], cjson.encode(newToObj))
@@ -116,7 +126,7 @@ redis.call('SET', KEYS[2], cjson.encode(newToObj))
 -- 7. Write TX Logs
 local txFromLog = {
     ts = ts,
-    type = "TRANSFER_OUT",
+    type = txFromType,
     qty = qty,
     fromCode = fromCode,
     toCode = toCode,
@@ -126,7 +136,7 @@ local txFromLog = {
 }
 local txToLog = {
     ts = ts,
-    type = "TRANSFER_IN",
+    type = "TRANSFER_IN_PHOI",
     qty = qty,
     fromCode = fromCode,
     toCode = toCode,
@@ -138,7 +148,7 @@ local txToLog = {
 redis.call('RPUSH', KEYS[5], cjson.encode(txFromLog))
 redis.call('RPUSH', KEYS[6], cjson.encode(txToLog))
 
--- 8. Track pairs
+-- 8. Track active pairs
 redis.call('SADD', KEYS[7], fromCode .. ":" .. sku)
 redis.call('SADD', KEYS[7], toCode .. ":" .. sku)
 
@@ -147,7 +157,8 @@ return "OK"
 
 /**
  * LUA SCRIPT for inputProduction:
- * Atomic check tonPhoiDauVao >= actualQty (if not isFirstStep), lazy snapshot creation, state mutation, and log writing.
+ * - First Step: tonPhoi += actualQty
+ * - Processing Step: tonPhoi -= actualQty, tonThanhPham += actualQty (requires tonPhoi >= actualQty)
  */
 const INPUT_PRODUCTION_LUA = `
 local actualQty = tonumber(ARGV[1])
@@ -162,19 +173,17 @@ local today = ARGV[8]
 -- 1. Read state
 local rawState = redis.call('GET', KEYS[1])
 local tonPhoi = 0
-local tonDauVao = 0
-local tonBTP = 0
+local tonTP = 0
 if rawState then
     local obj = cjson.decode(rawState)
     tonPhoi = tonumber(obj.tonPhoi or 0)
-    tonDauVao = tonumber(obj.tonPhoiDauVao or 0)
-    tonBTP = tonumber(obj.tonBanThanhPham or 0)
+    tonTP = tonumber(obj.tonThanhPham or obj.tonBanThanhPham or 0)
 end
 
 -- 2. Check input constraint if not first step
 if not isFirstStep then
-    if actualQty > tonDauVao then
-        return "INSUFFICIENT_INPUT|" .. tostring(tonDauVao)
+    if actualQty > tonPhoi then
+        return "INSUFFICIENT_INPUT|" .. tostring(tonPhoi)
     end
 end
 
@@ -182,8 +191,7 @@ end
 if redis.call('EXISTS', KEYS[2]) == 0 then
     local openObj = {
         tonPhoi = tonPhoi,
-        tonPhoiDauVao = tonDauVao,
-        tonBanThanhPham = tonBTP,
+        tonThanhPham = tonTP,
         declaredBy = "system_lazy",
         declaredAt = ts
     }
@@ -203,30 +211,21 @@ if isFirstStep then
     }
     redis.call('RPUSH', KEYS[3], cjson.encode(txLog))
 else
-    tonDauVao = tonDauVao - actualQty
-    tonBTP = tonBTP + actualQty
+    tonPhoi = tonPhoi - actualQty
+    tonTP = tonTP + actualQty
 
-    local txConsume = {
+    local txProduceTP = {
         ts = ts,
-        type = "CONSUME_PHOI",
+        type = "PRODUCE_TP",
         qty = actualQty,
         sku = sku,
         woId = woId,
         actor = actor
     }
-    local txOutput = {
-        ts = ts,
-        type = "OUTPUT_BTP",
-        qty = actualQty,
-        sku = sku,
-        woId = woId,
-        actor = actor
-    }
-    redis.call('RPUSH', KEYS[3], cjson.encode(txConsume))
-    redis.call('RPUSH', KEYS[3], cjson.encode(txOutput))
+    redis.call('RPUSH', KEYS[3], cjson.encode(txProduceTP))
 end
 
-local newStateObj = { tonPhoi = tonPhoi, tonPhoiDauVao = tonDauVao, tonBanThanhPham = tonBTP }
+local newStateObj = { tonPhoi = tonPhoi, tonThanhPham = tonTP }
 redis.call('SET', KEYS[1], cjson.encode(newStateObj))
 redis.call('SADD', KEYS[4], code .. ":" .. sku)
 
@@ -234,7 +233,7 @@ return "OK"
 `;
 
 /**
- * 1. transferPhoi: Chuyển phôi từ xưởng nguồn sang xưởng đích
+ * 1. transferPhoi: Chuyển phôi/thành phẩm từ xưởng nguồn sang xưởng đích
  */
 export async function transferPhoi(
   fromCode: string,
@@ -242,11 +241,12 @@ export async function transferPhoi(
   sku: string,
   qty: number,
   actor: string,
+  isFirstStepFrom: boolean = false,
   woId?: string,
   customDate?: string
 ): Promise<void> {
   if (qty <= 0) {
-    throw new Error("Sản lượng chuyển phôi phải lớn hơn 0.");
+    throw new Error("Sản lượng xuất chuyển phải lớn hơn 0.");
   }
 
   const today = customDate || getTodayDateString();
@@ -271,17 +271,20 @@ export async function transferPhoi(
     toCode,
     sku,
     today,
+    isFirstStepFrom ? "1" : "0",
   ];
 
   const result = (await redis.eval(TRANSFER_PHOI_LUA, keys, args)) as string;
 
-  if (typeof result === "string" && result.startsWith("INSUFFICIENT_PHOI")) {
-    const available = result.split("|")[1] || "0";
-    throw new Error(`Không đủ phôi để xuất chuyển! Xưởng ${fromCode} chỉ có sẵn ${available} pcs phôi.`);
+  if (typeof result === "string" && result.startsWith("INSUFFICIENT_STOCK")) {
+    const parts = result.split("|");
+    const stockType = parts[1] === "TP" ? "thành phẩm" : "phôi";
+    const available = parts[2] || "0";
+    throw new Error(`Không đủ ${stockType} để xuất chuyển! Xưởng ${fromCode} chỉ có sẵn ${available} pcs ${stockType}.`);
   }
 
   if (result !== "OK") {
-    throw new Error(`Lỗi giao dịch chuyển phôi: ${result}`);
+    throw new Error(`Lỗi giao dịch xuất chuyển: ${result}`);
   }
 }
 
@@ -335,7 +338,63 @@ export async function inputProduction(
 }
 
 /**
- * 3. getXNTReport: Bảng XNT real-time cho ngày bất kỳ
+ * 3. recordShipmentXNT: Deducts tonThanhPham at final workshop LR upon shipment
+ */
+export async function recordShipmentXNT(
+  wcCode: string,
+  sku: string,
+  qty: number,
+  actor: string,
+  woId?: string,
+  customDate?: string
+): Promise<void> {
+  const today = customDate || getTodayDateString();
+  const ts = new Date().toISOString();
+
+  const stateKey = getStockStateKey(wcCode, sku);
+  const snapshotKey = getOpeningSnapshotKey(wcCode, sku, today);
+  const txKey = getTxLogKey(wcCode, sku, today);
+
+  const existsSnapshot = await redis.exists(snapshotKey);
+  const rawState = await redis.get<StockState | string>(stateKey);
+
+  let tonPhoi = 0;
+  let tonTP = 0;
+  if (rawState) {
+    const obj = typeof rawState === "string" ? JSON.parse(rawState) : rawState;
+    tonPhoi = Number(obj.tonPhoi || 0);
+    tonTP = Number(obj.tonThanhPham || obj.tonBanThanhPham || 0);
+  }
+
+  if (existsSnapshot === 0) {
+    await redis.set(snapshotKey, {
+      tonPhoi,
+      tonThanhPham: tonTP,
+      declaredBy: "system_lazy",
+      declaredAt: ts,
+    });
+  }
+
+  tonTP = Math.max(0, tonTP - qty);
+
+  const txLog: TxLogEntry = {
+    ts,
+    type: "SHIPMENT_OUT_TP",
+    qty,
+    sku,
+    woId,
+    actor,
+  };
+
+  await Promise.all([
+    redis.set(stateKey, { tonPhoi, tonThanhPham: tonTP }),
+    redis.rpush(txKey, txLog),
+    redis.sadd(ACTIVE_PAIRS_KEY, `${wcCode}:${sku}`),
+  ]);
+}
+
+/**
+ * 4. getXNTReport: Bảng XNT real-time cho ngày bất kỳ
  */
 export async function getXNTReport(dateStr: string, filterSku?: string): Promise<XNTReportItem[]> {
   const activePairs = await redis.smembers(ACTIVE_PAIRS_KEY);
@@ -362,11 +421,9 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
       const parsed = typeof rawSnapshot === "string" ? JSON.parse(rawSnapshot) : rawSnapshot;
       opening = {
         tonPhoi: Number(parsed.tonPhoi || 0),
-        tonPhoiDauVao: Number(parsed.tonPhoiDauVao || 0),
-        tonBanThanhPham: Number(parsed.tonBanThanhPham || 0),
+        tonThanhPham: Number(parsed.tonThanhPham || parsed.tonBanThanhPham || 0),
       };
     } else {
-      // If snapshot is missing for dateStr, opening equals current state
       opening = { ...currentState };
     }
 
@@ -374,8 +431,8 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
     const txKey = getTxLogKey(wcCode, sku, dateStr);
     const rawLogs = await redis.lrange<TxLogEntry | string>(txKey, 0, -1);
 
-    const nhap: StockBreakdown = { tonPhoi: 0, tonPhoiDauVao: 0, tonBanThanhPham: 0 };
-    const xuat: StockBreakdown = { tonPhoi: 0, tonPhoiDauVao: 0, tonBanThanhPham: 0 };
+    const nhap: StockBreakdown = { tonPhoi: 0, tonThanhPham: 0 };
+    const xuat: StockBreakdown = { tonPhoi: 0, tonThanhPham: 0 };
 
     if (rawLogs && rawLogs.length > 0) {
       for (const logItem of rawLogs) {
@@ -386,17 +443,21 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
           case "PRODUCE_PHOI":
             nhap.tonPhoi += qty;
             break;
-          case "TRANSFER_OUT":
+          case "TRANSFER_OUT_PHOI":
             xuat.tonPhoi += qty;
             break;
-          case "TRANSFER_IN":
-            nhap.tonPhoiDauVao += qty;
+          case "TRANSFER_OUT_TP":
+            xuat.tonThanhPham += qty;
             break;
-          case "CONSUME_PHOI":
-            xuat.tonPhoiDauVao += qty;
+          case "TRANSFER_IN_PHOI":
+            nhap.tonPhoi += qty;
             break;
-          case "OUTPUT_BTP":
-            nhap.tonBanThanhPham += qty;
+          case "PRODUCE_TP":
+            xuat.tonPhoi += qty; // Consumes phoi
+            nhap.tonThanhPham += qty; // Produces TP
+            break;
+          case "SHIPMENT_OUT_TP":
+            xuat.tonThanhPham += qty;
             break;
         }
       }
@@ -405,8 +466,7 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
     // 4. Calculate closing = opening + nhap - xuat
     const closing: StockBreakdown = {
       tonPhoi: opening.tonPhoi + nhap.tonPhoi - xuat.tonPhoi,
-      tonPhoiDauVao: opening.tonPhoiDauVao + nhap.tonPhoiDauVao - xuat.tonPhoiDauVao,
-      tonBanThanhPham: opening.tonBanThanhPham + nhap.tonBanThanhPham - xuat.tonBanThanhPham,
+      tonThanhPham: opening.tonThanhPham + nhap.tonThanhPham - xuat.tonThanhPham,
     };
 
     reportItems.push({

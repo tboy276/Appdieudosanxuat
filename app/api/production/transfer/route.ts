@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
 
     if (!fromCode || !toCode || !sku || !qty || Number(qty) <= 0) {
       return NextResponse.json(
-        { error: "Xưởng nguồn, xưởng đích, SKU và số lượng chuyển phôi (> 0) là bắt buộc." },
+        { error: "Xưởng nguồn, xưởng đích, SKU và số lượng chuyển (> 0) là bắt buộc." },
         { status: 400 }
       );
     }
@@ -45,14 +45,16 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const isFirstStepFrom = fromIndex === 0;
+
     // Call physical inventory transfer
-    await transferPhoi(fromCode, toCode, sku, qtyNum, user!.username, woId, customDate);
+    await transferPhoi(fromCode, toCode, sku, qtyNum, user!.username, isFirstStepFrom, woId, customDate);
 
     return NextResponse.json({
       success: true,
-      message: `Đã xuất chuyển ${qtyNum} pcs phôi từ xưởng ${fromCode} sang xưởng ${toCode}.`,
+      message: `Đã xuất chuyển ${qtyNum} pcs từ xưởng ${fromCode} sang xưởng ${toCode}.`,
     });
   } catch (err) {
-    return handleApiError(err, "Xuất chuyển phôi thất bại.");
+    return handleApiError(err, "Xuất chuyển thất bại.");
   }
 }

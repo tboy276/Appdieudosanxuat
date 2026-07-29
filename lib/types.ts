@@ -18,8 +18,7 @@ export interface WorkCenter {
 
 export interface StockState {
   tonPhoi: number;
-  tonPhoiDauVao: number;
-  tonBanThanhPham: number;
+  tonThanhPham: number;
 }
 
 export interface Product {

@@ -8,15 +8,13 @@ import {
   RefreshCw,
   AlertTriangle,
   Layers,
-  ArrowDownRight,
   ArrowUpRight,
   SlidersHorizontal,
 } from "lucide-react";
 
 interface StockBreakdown {
   tonPhoi: number;
-  tonPhoiDauVao: number;
-  tonBanThanhPham: number;
+  tonThanhPham: number;
 }
 
 interface XNTItem {
@@ -54,12 +52,12 @@ export default function XNTDashboardPage() {
 
   // Summary Metrics
   const totalPairs = reportItems.length;
-  const totalOutputBTP = reportItems.reduce(
-    (sum, item) => sum + (item.nhap.tonBanThanhPham || 0),
+  const totalOutputTP = reportItems.reduce(
+    (sum, item) => sum + (item.nhap.tonThanhPham || 0),
     0
   );
   const lowStockCount = reportItems.filter(
-    (item) => item.closing.tonPhoiDauVao < lowStockThreshold
+    (item) => item.closing.tonPhoi < lowStockThreshold
   ).length;
 
   return (
@@ -83,10 +81,10 @@ export default function XNTDashboardPage() {
         <div className="p-4 rounded bg-canvas border border-border flex items-center justify-between">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wider text-txt-secondary">
-              Sản Lượng BTP Mới Tạo Trong Kỳ
+              Sản Lượng Thành Phẩm Tạo Trong Kỳ
             </p>
             <p className="text-2xl font-extrabold text-emerald-600 tabular-nums font-mono mt-1">
-              +{totalOutputBTP.toLocaleString()} <span className="text-xs font-normal">pcs</span>
+              +{totalOutputTP.toLocaleString()} <span className="text-xs font-normal">pcs</span>
             </p>
           </div>
           <div className="flex items-center justify-center w-9 h-9 rounded bg-emerald-50 text-emerald-600">
@@ -150,7 +148,7 @@ export default function XNTDashboardPage() {
             <span>pcs</span>
           </div>
 
-          {/* Manual Refresh & Polling Status */}
+          {/* Manual Refresh */}
           <button
             onClick={() => mutate()}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-subtle border border-border text-xs font-medium text-txt-primary hover:bg-border transition-colors"
@@ -175,7 +173,7 @@ export default function XNTDashboardPage() {
         </div>
       )}
 
-      {/* Industrial Density XNT Data Table */}
+      {/* Industrial Density XNT Data Table (2-State Model) */}
       <div className="border border-border rounded bg-canvas overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs tabular-nums border-collapse">
@@ -183,10 +181,10 @@ export default function XNTDashboardPage() {
               {/* Grouped Category Header */}
               <tr className="bg-subtle border-b border-border text-txt-secondary uppercase tracking-wider text-[10px] font-semibold">
                 <th colSpan={2} className="py-2 px-4 border-r border-border">Thực Thể</th>
-                <th colSpan={3} className="py-2 px-4 text-center border-r border-border bg-subtle/80">1. Tồn Đầu Kỳ</th>
-                <th colSpan={3} className="py-2 px-4 text-center border-r border-border bg-emerald-50/40 text-emerald-700">2. Nhập Trong Kỳ</th>
-                <th colSpan={3} className="py-2 px-4 text-center border-r border-border bg-amber-50/40 text-amber-700">3. Xuất Trong Kỳ</th>
-                <th colSpan={3} className="py-2 px-4 text-center font-bold text-txt-primary bg-subtle/80">4. Tồn Cuối Kỳ</th>
+                <th colSpan={2} className="py-2 px-4 text-center border-r border-border bg-subtle/80">1. Tồn Đầu Kỳ</th>
+                <th colSpan={2} className="py-2 px-4 text-center border-r border-border bg-emerald-50/40 text-emerald-700">2. Nhập Trong Kỳ</th>
+                <th colSpan={2} className="py-2 px-4 text-center border-r border-border bg-amber-50/40 text-amber-700">3. Xuất Trong Kỳ</th>
+                <th colSpan={2} className="py-2 px-4 text-center font-bold text-txt-primary bg-subtle/80">4. Tồn Cuối Kỳ</th>
               </tr>
               {/* Detail Column Header */}
               <tr className="bg-subtle/50 border-b border-border text-txt-secondary text-[11px] font-medium">
@@ -195,29 +193,25 @@ export default function XNTDashboardPage() {
 
                 {/* Opening */}
                 <th className="py-2 px-3 text-right">Phôi</th>
-                <th className="py-2 px-3 text-right">Phôi Vào</th>
-                <th className="py-2 px-3 text-right border-r border-border">BTP</th>
+                <th className="py-2 px-3 text-right border-r border-border">Thành Phẩm</th>
 
                 {/* Nhap */}
                 <th className="py-2 px-3 text-right text-emerald-700">Phôi</th>
-                <th className="py-2 px-3 text-right text-emerald-700">Phôi Vào</th>
-                <th className="py-2 px-3 text-right border-r border-border text-emerald-700">BTP</th>
+                <th className="py-2 px-3 text-right border-r border-border text-emerald-700">Thành Phẩm</th>
 
                 {/* Xuat */}
                 <th className="py-2 px-3 text-right text-amber-700">Phôi</th>
-                <th className="py-2 px-3 text-right text-amber-700">Phôi Vào</th>
-                <th className="py-2 px-3 text-right border-r border-border text-amber-700">BTP</th>
+                <th className="py-2 px-3 text-right border-r border-border text-amber-700">Thành Phẩm</th>
 
                 {/* Closing */}
                 <th className="py-2 px-3 text-right font-bold text-txt-primary">Phôi</th>
-                <th className="py-2 px-3 text-right font-bold text-txt-primary">Phôi Vào</th>
-                <th className="py-2 px-3 text-right font-bold text-txt-primary">BTP</th>
+                <th className="py-2 px-3 text-right font-bold text-txt-primary">Thành Phẩm</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {!report ? (
                 <tr>
-                  <td colSpan={14} className="py-12 text-center text-txt-secondary">
+                  <td colSpan={10} className="py-12 text-center text-txt-secondary">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <RefreshCw className="w-5 h-5 animate-spin text-txt-secondary" />
                       <span>Đang tải dữ liệu Xuất-Nhập-Tồn...</span>
@@ -226,13 +220,13 @@ export default function XNTDashboardPage() {
                 </tr>
               ) : reportItems.length === 0 ? (
                 <tr>
-                  <td colSpan={14} className="py-12 text-center text-txt-secondary">
+                  <td colSpan={10} className="py-12 text-center text-txt-secondary">
                     Chưa có giao dịch phát sinh hoặc chưa khởi tạo tồn kho cho ngày này.
                   </td>
                 </tr>
               ) : (
                 reportItems.map((item, idx) => {
-                  const isLowStock = item.closing.tonPhoiDauVao < lowStockThreshold;
+                  const isLowStock = item.closing.tonPhoi < lowStockThreshold;
 
                   return (
                     <tr
@@ -245,7 +239,7 @@ export default function XNTDashboardPage() {
                       <td className="py-2.5 px-4 font-semibold text-txt-primary border-r border-border">
                         <div className="flex items-center gap-1.5">
                           {isLowStock && (
-                            <span title={`Cảnh báo: Tồn phôi đầu vào (${item.closing.tonPhoiDauVao} pcs) thấp hơn ngưỡng ${lowStockThreshold} pcs`}>
+                            <span title={`Cảnh báo: Tồn phôi (${item.closing.tonPhoi} pcs) thấp hơn ngưỡng ${lowStockThreshold} pcs`}>
                               <AlertTriangle className="w-3.5 h-3.5 text-warning shrink-0" />
                             </span>
                           )}
@@ -260,37 +254,29 @@ export default function XNTDashboardPage() {
 
                       {/* Opening */}
                       <td className="py-2.5 px-3 text-right text-txt-secondary font-mono">{item.opening.tonPhoi}</td>
-                      <td className="py-2.5 px-3 text-right text-txt-secondary font-mono">{item.opening.tonPhoiDauVao}</td>
-                      <td className="py-2.5 px-3 text-right text-txt-secondary font-mono border-r border-border">{item.opening.tonBanThanhPham}</td>
+                      <td className="py-2.5 px-3 text-right text-txt-secondary font-mono border-r border-border">{item.opening.tonThanhPham}</td>
 
                       {/* Nhap */}
                       <td className="py-2.5 px-3 text-right font-medium text-emerald-600 font-mono">
                         {item.nhap.tonPhoi > 0 ? `+${item.nhap.tonPhoi}` : 0}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-medium text-emerald-600 font-mono">
-                        {item.nhap.tonPhoiDauVao > 0 ? `+${item.nhap.tonPhoiDauVao}` : 0}
-                      </td>
                       <td className="py-2.5 px-3 text-right font-medium text-emerald-600 font-mono border-r border-border">
-                        {item.nhap.tonBanThanhPham > 0 ? `+${item.nhap.tonBanThanhPham}` : 0}
+                        {item.nhap.tonThanhPham > 0 ? `+${item.nhap.tonThanhPham}` : 0}
                       </td>
 
                       {/* Xuat */}
                       <td className="py-2.5 px-3 text-right font-medium text-amber-600 font-mono">
                         {item.xuat.tonPhoi > 0 ? `-${item.xuat.tonPhoi}` : 0}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-medium text-amber-600 font-mono">
-                        {item.xuat.tonPhoiDauVao > 0 ? `-${item.xuat.tonPhoiDauVao}` : 0}
-                      </td>
                       <td className="py-2.5 px-3 text-right font-medium text-amber-600 font-mono border-r border-border">
-                        {item.xuat.tonBanThanhPham > 0 ? `-${item.xuat.tonBanThanhPham}` : 0}
+                        {item.xuat.tonThanhPham > 0 ? `-${item.xuat.tonThanhPham}` : 0}
                       </td>
 
                       {/* Closing */}
-                      <td className="py-2.5 px-3 text-right font-bold text-txt-primary font-mono">{item.closing.tonPhoi}</td>
                       <td className={`py-2.5 px-3 text-right font-bold font-mono ${isLowStock ? "text-amber-700" : "text-txt-primary"}`}>
-                        {item.closing.tonPhoiDauVao}
+                        {item.closing.tonPhoi}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-bold text-txt-primary font-mono">{item.closing.tonBanThanhPham}</td>
+                      <td className="py-2.5 px-3 text-right font-bold text-txt-primary font-mono">{item.closing.tonThanhPham}</td>
                     </tr>
                   );
                 })

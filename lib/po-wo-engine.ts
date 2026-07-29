@@ -77,6 +77,7 @@ const DEFAULT_SCRAP_RATES: Record<string, number> = {
 /**
  * Pure calculation function: computeWOPlan
  * Computes planned quantity for each step in product routing working BACKWARD from final step to start.
+ * Refactored for Dual-State Model (reading tonThanhPham at final step and tonPhoi at next step).
  */
 export function computeWOPlan(
   sku: string,
@@ -94,10 +95,10 @@ export function computeWOPlan(
 
   // 1. Final Step (LR)
   const finalCode = routing[n - 1];
-  const finalStock = stockByCode[finalCode] || { tonPhoi: 0, tonPhoiDauVao: 0, tonBanThanhPham: 0 };
+  const finalStock = stockByCode[finalCode] || { tonPhoi: 0, tonThanhPham: 0 };
   const finalScrapRate = scrapRateByCode[finalCode] ?? DEFAULT_SCRAP_RATES[finalCode] ?? 0;
 
-  const requiredOutFinal = Math.max(0, targetQty - finalStock.tonBanThanhPham);
+  const requiredOutFinal = Math.max(0, targetQty - (finalStock.tonThanhPham || 0));
   plannedQtyMap[finalCode] = Math.ceil(requiredOutFinal / (1 - finalScrapRate));
 
   // 2. Backward Calculation from (n - 2) down to 0
@@ -106,11 +107,12 @@ export function computeWOPlan(
     const nextCode = routing[i + 1];
 
     const nextPlanned = plannedQtyMap[nextCode];
-    const stockCurrent = stockByCode[currentCode] || { tonPhoi: 0, tonPhoiDauVao: 0, tonBanThanhPham: 0 };
-    const stockNext = stockByCode[nextCode] || { tonPhoi: 0, tonPhoiDauVao: 0, tonBanThanhPham: 0 };
+    const stockNext = stockByCode[nextCode] || { tonPhoi: 0, tonThanhPham: 0 };
     const scrapRate = scrapRateByCode[currentCode] ?? DEFAULT_SCRAP_RATES[currentCode] ?? 0;
 
-    const need = Math.max(0, nextPlanned - stockNext.tonPhoiDauVao - stockCurrent.tonPhoi);
+    // Phoi already sitting at next step reduces required output from current step
+    const availablePhoiAtNext = stockNext.tonPhoi || 0;
+    const need = Math.max(0, nextPlanned - availablePhoiAtNext);
     plannedQtyMap[currentCode] = Math.ceil(need / (1 - scrapRate));
   }
 

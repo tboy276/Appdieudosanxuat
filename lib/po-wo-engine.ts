@@ -218,11 +218,23 @@ export async function deletePO(poId: string): Promise<void> {
 
 /**
  * 2. createWO: Tạo Lệnh sản xuất (WO) từ PO
+ * Strict 1-PO-to-1-WO mapping & supports user custom planned quantities per workshop.
  */
-export async function createWO(poId: string, actor: string): Promise<WO> {
+export async function createWO(
+  poId: string,
+  actor: string,
+  customPlannedQtys?: Record<string, number>
+): Promise<WO> {
   const po = await getPO(poId);
   if (!po) {
     throw new Error(`Không tìm thấy đơn hàng PO: ${poId}`);
+  }
+
+  // 1-to-1 PO-WO Mapping Check
+  const existingWos = await listWOs();
+  const duplicate = existingWos.find((w) => w.poId === poId);
+  if (duplicate) {
+    throw new Error(`Đơn hàng PO ${po.poNumber} (${poId}) đã có Lệnh sản xuất ${duplicate.woId}. Mỗi PO chỉ được tạo 1 WO duy nhất.`);
   }
 
   const product = await getProduct(po.sku);
@@ -246,8 +258,25 @@ export async function createWO(poId: string, actor: string): Promise<WO> {
     stockByCode[code] = await getStockState(code, po.sku);
   }
 
-  // Compute planned quantity backward
-  const planSteps = computeWOPlan(po.sku, product.routing, po.qty, stockByCode, scrapRateByCode);
+  // Calculate default planned quantity backward
+  const autoPlanSteps = computeWOPlan(po.sku, product.routing, po.qty, stockByCode, scrapRateByCode);
+
+  // Map steps with custom user planned quantities if provided
+  const finalSteps: WOStep[] = product.routing.map((code) => {
+    const autoQty = autoPlanSteps.find((s) => s.code === code)?.plannedQty || po.qty;
+    let plannedQty = autoQty;
+
+    if (customPlannedQtys && customPlannedQtys[code] !== undefined && Number(customPlannedQtys[code]) > 0) {
+      plannedQty = Number(customPlannedQtys[code]);
+    }
+
+    return {
+      code,
+      plannedQty,
+      actualQty: 0,
+      status: "PENDING",
+    };
+  });
 
   const woId = `WO-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   const now = new Date().toISOString();
@@ -260,12 +289,7 @@ export async function createWO(poId: string, actor: string): Promise<WO> {
     routing: product.routing,
     shippedQty: 0,
     status: "OPEN",
-    steps: planSteps.map((step) => ({
-      code: step.code,
-      plannedQty: step.plannedQty,
-      actualQty: 0,
-      status: "PENDING",
-    })),
+    steps: finalSteps,
     createdAt: now,
     createdBy: actor,
   };

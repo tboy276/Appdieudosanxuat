@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { poId } = body;
+    const { poId, customPlannedQtys } = body;
 
     if (!poId) {
       return NextResponse.json(
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const wo = await createWO(poId, user!.username);
+    const wo = await createWO(poId, user!.username, customPlannedQtys);
     return NextResponse.json(wo);
   } catch (err) {
     return handleApiError(err, "Tạo Lệnh sản xuất WO thất bại.");

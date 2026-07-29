@@ -248,4 +248,40 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine (Dual-State Model)", (
     const updatedPo = await updatePO(po.poId, { customerName: "Khách Cập Nhật" });
     expect(updatedPo.customerName).toBe("Khách Cập Nhật");
   });
+
+  it("Case 7: Custom Planned Quantities & 1-PO-to-1-WO Constraint", async () => {
+    await upsertProduct({
+      sku: "SKU-CUSTOM-01",
+      nameVi: "Trục Vít Tự Chọn",
+      routing: ["D1", "CK1", "LR"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    const po = await createPO({
+      poNumber: "PO-CUSTOM-01",
+      customerName: "Khách Custom Qty",
+      sku: "SKU-CUSTOM-01",
+      productNameVi: "Trục Vít Tự Chọn",
+      qty: 500,
+      requestedDate: "2026-10-01",
+    });
+
+    // Create WO with custom planned quantities per workshop
+    const wo = await createWO(po.poId, "admin", {
+      D1: 600,
+      CK1: 550,
+      LR: 500,
+    });
+
+    expect(wo.steps).toEqual([
+      { code: "D1", plannedQty: 600, actualQty: 0, status: "PENDING" },
+      { code: "CK1", plannedQty: 550, actualQty: 0, status: "PENDING" },
+      { code: "LR", plannedQty: 500, actualQty: 0, status: "PENDING" },
+    ]);
+
+    // Re-creating a second WO for the same PO must be rejected by 1-PO-to-1-WO rule
+    await expect(createWO(po.poId, "admin")).rejects.toThrow("Mỗi PO chỉ được tạo 1 WO duy nhất");
+  });
 });

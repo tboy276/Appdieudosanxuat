@@ -61,7 +61,7 @@ export interface WOPlanStep {
   plannedQty: number;
 }
 
-const DEFAULT_SCRAP_RATES: Record<string, number> = {
+export const DEFAULT_SCRAP_RATES: Record<string, number> = {
   CUAPHOI: 0.01,
   D1: 0.10,
   D2: 0.10,
@@ -84,7 +84,7 @@ export function computeWOPlan(
   routing: string[],
   targetQty: number,
   stockByCode: Record<string, StockState>,
-  scrapRateByCode: Record<string, number>
+  scrapRateByCode: Record<string, number> = DEFAULT_SCRAP_RATES
 ): WOPlanStep[] {
   if (!routing || routing.length === 0) {
     throw new Error(`SKU ${sku} chưa khai báo routing, vui lòng bổ sung ở Tab Danh mục Sản phẩm.`);
@@ -123,6 +123,52 @@ export function computeWOPlan(
 }
 
 /**
+ * Pure calculation function: computeEquivalentFinishedQty
+ * Computes equivalent finished quantity at the final step for all stock across routing steps.
+ * Forward calculation incorporating remaining cumulative scrap rates.
+ */
+export function computeEquivalentFinishedQty(
+  sku: string,
+  routing: string[],
+  stockByCode: Record<string, StockState>,
+  scrapRateByCode: Record<string, number> = DEFAULT_SCRAP_RATES
+): number {
+  if (!routing || routing.length === 0) return 0;
+
+  let totalEquivalent = 0;
+  const n = routing.length;
+
+  for (let i = 0; i < n; i++) {
+    const currentCode = routing[i];
+    const stock = stockByCode[currentCode] || { tonPhoi: 0, tonThanhPham: 0 };
+    const tonPhoi = stock.tonPhoi || 0;
+    const tonThanhPham = stock.tonThanhPham || 0;
+
+    if (tonPhoi <= 0 && tonThanhPham <= 0) continue;
+
+    // Yield for tonPhoi at step i: j from i to n-1
+    let phoiYieldFactor = 1;
+    for (let j = i; j < n; j++) {
+      const codeJ = routing[j];
+      const rateJ = scrapRateByCode[codeJ] ?? DEFAULT_SCRAP_RATES[codeJ] ?? 0;
+      phoiYieldFactor *= (1 - rateJ);
+    }
+
+    // Yield for tonThanhPham at step i: j from i+1 to n-1 (since step i is already completed)
+    let tpYieldFactor = 1;
+    for (let j = i + 1; j < n; j++) {
+      const codeJ = routing[j];
+      const rateJ = scrapRateByCode[codeJ] ?? DEFAULT_SCRAP_RATES[codeJ] ?? 0;
+      tpYieldFactor *= (1 - rateJ);
+    }
+
+    totalEquivalent += (tonPhoi * phoiYieldFactor) + (tonThanhPham * tpYieldFactor);
+  }
+
+  return totalEquivalent;
+}
+
+/**
  * PO & WO Storage Helpers
  */
 export async function getPO(poId: string): Promise<PO | null> {
@@ -135,12 +181,8 @@ export async function listPOs(): Promise<PO[]> {
   const poIds = await redis.smembers("pos");
   if (!poIds || poIds.length === 0) return [];
 
-  const pos: PO[] = [];
-  for (const id of poIds) {
-    const po = await getPO(id);
-    if (po) pos.push(po);
-  }
-  return pos;
+  const results = await Promise.all(poIds.map((id) => getPO(id)));
+  return results.filter((po): po is PO => po !== null && po !== undefined);
 }
 
 export async function getWO(woId: string): Promise<WO | null> {
@@ -153,12 +195,8 @@ export async function listWOs(): Promise<WO[]> {
   const woIds = await redis.smembers("wos");
   if (!woIds || woIds.length === 0) return [];
 
-  const wos: WO[] = [];
-  for (const id of woIds) {
-    const wo = await getWO(id);
-    if (wo) wos.push(wo);
-  }
-  return wos;
+  const results = await Promise.all(woIds.map((id) => getWO(id)));
+  return results.filter((wo): wo is WO => wo !== null && wo !== undefined);
 }
 
 /**
@@ -278,7 +316,7 @@ export async function createWO(
     };
   });
 
-  const woId = `WO-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const woId = `WO-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
   const now = new Date().toISOString();
 
   const wo: WO = {
@@ -313,9 +351,78 @@ export async function updateWO(woId: string, updates: Partial<WO>): Promise<WO> 
   const existing = await getWO(woId);
   if (!existing) throw new Error(`Không tìm thấy Lệnh sản xuất WO: ${woId}`);
 
+  let updatedSteps = existing.steps;
+  let updatedStatus = updates.status !== undefined ? updates.status : existing.status;
+
+  if (updates.targetQty !== undefined && Number(updates.targetQty) !== existing.targetQty) {
+    const newTargetQty = Number(updates.targetQty);
+    if (newTargetQty <= 0) {
+      throw new Error("Số lượng mục tiêu WO phải lớn hơn 0.");
+    }
+
+    if (newTargetQty < existing.shippedQty) {
+      throw new Error(`Không thể giảm targetQty (${newTargetQty} pcs) xuống dưới số lượng đã xuất hàng (${existing.shippedQty} pcs).`);
+    }
+
+    // 1. Fetch current stock states for each workcenter in product routing
+    const stockByCode: Record<string, StockState> = {};
+    for (const code of existing.routing) {
+      stockByCode[code] = await getStockState(code, existing.sku);
+    }
+
+    // 2. Fetch workcenter scrap rates
+    const rawWcs = await redis.get<WorkCenter[] | string>("workcenters");
+    const scrapRateByCode: Record<string, number> = { ...DEFAULT_SCRAP_RATES };
+    if (rawWcs) {
+      const wcs: WorkCenter[] = typeof rawWcs === "string" ? JSON.parse(rawWcs) : rawWcs;
+      wcs.forEach((wc) => {
+        scrapRateByCode[wc.code] = wc.scrapRate;
+      });
+    }
+
+    // 3. Compute recalculated WO plan steps based on current stock
+    const autoPlanSteps = computeWOPlan(
+      existing.sku,
+      existing.routing,
+      newTargetQty,
+      stockByCode,
+      scrapRateByCode
+    );
+
+    const planMap = Object.fromEntries(autoPlanSteps.map((s) => [s.code, s.plannedQty]));
+
+    // 4. Update each step's plannedQty & transition status if actualQty < newPlannedQty
+    updatedSteps = existing.steps.map((step) => {
+      const newPlannedQty = planMap[step.code] ?? newTargetQty;
+      let newStatus = step.status;
+
+      if (step.actualQty < newPlannedQty) {
+        // If actualQty is less than new plannedQty, step is not done yet -> PENDING
+        newStatus = "PENDING";
+      } else {
+        // If actualQty >= newPlannedQty, step is DONE
+        newStatus = "DONE";
+      }
+
+      return {
+        ...step,
+        plannedQty: newPlannedQty,
+        status: newStatus,
+      };
+    });
+
+    // 5. Sync overall WO status: if final step is no longer DONE, downgrade READY_TO_SHIP -> IN_PROGRESS
+    const lastStep = updatedSteps[updatedSteps.length - 1];
+    if (lastStep && lastStep.status !== "DONE" && (updatedStatus === "READY_TO_SHIP" || existing.status === "READY_TO_SHIP")) {
+      updatedStatus = "IN_PROGRESS";
+    }
+  }
+
   const updated: WO = {
     ...existing,
     ...updates,
+    steps: updatedSteps,
+    status: updatedStatus,
     woId,
   };
 

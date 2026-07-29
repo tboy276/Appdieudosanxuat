@@ -54,6 +54,10 @@ vi.mock("./redis", () => {
 
 import {
   computeWOPlan,
+  computeEquivalentFinishedQty,
+  listPOs,
+  listWOs,
+  getWO,
   createPO,
   updatePO,
   deletePO,
@@ -283,5 +287,329 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine (Dual-State Model)", (
 
     // Re-creating a second WO for the same PO must be rejected by 1-PO-to-1-WO rule
     await expect(createWO(po.poId, "admin")).rejects.toThrow("Mỗi PO chỉ được tạo 1 WO duy nhất");
+  });
+
+  describe("computeEquivalentFinishedQty - Equivalent Finished Goods Calculation", () => {
+    const customScrapRates = {
+      D1: 0.10,
+      CK1: 0.02,
+      MNL: 0.03,
+      LR: 0.00,
+    };
+    const routing = ["D1", "CK1", "MNL", "LR"];
+
+    it("Case 1: 4-step routing with phoi at first step (D1) should reduce equivalentQty according to accumulated scrap rates", () => {
+      const stockByCode: Record<string, StockState> = {
+        D1: { tonPhoi: 1000, tonThanhPham: 0 },
+      };
+
+      const eqQty = computeEquivalentFinishedQty("SKU-EQ-01", routing, stockByCode, customScrapRates);
+
+      // Yield factor: 0.90 * 0.98 * 0.97 * 1.00 = 0.85554
+      // 1000 * 0.85554 = 855.54
+      expect(eqQty).toBeCloseTo(855.54, 2);
+    });
+
+    it("Case 2: tonThanhPham at middle step (CK1) should NOT deduct scrap rate of CK1 (already completed step CK1)", () => {
+      const stockByCode: Record<string, StockState> = {
+        CK1: { tonPhoi: 0, tonThanhPham: 1000 },
+      };
+
+      const eqQty = computeEquivalentFinishedQty("SKU-EQ-02", routing, stockByCode, customScrapRates);
+
+      // Yield factor for tonThanhPham at CK1: (1 - 0.03) * (1 - 0.00) = 0.97
+      // 1000 * 0.97 = 970 (CK1's 2% scrap is NOT deducted)
+      expect(eqQty).toBeCloseTo(970, 2);
+    });
+
+    it("Case 3: Exact Excel verification for 1000 pcs phoi at D1 yields ~855.54 equivalent finished goods instead of raw 1000", () => {
+      const stockByCode: Record<string, StockState> = {
+        D1: { tonPhoi: 1000, tonThanhPham: 0 },
+        CK1: { tonPhoi: 0, tonThanhPham: 0 },
+        MNL: { tonPhoi: 0, tonThanhPham: 0 },
+        LR: { tonPhoi: 0, tonThanhPham: 0 },
+      };
+
+      const eqQty = computeEquivalentFinishedQty("SKU-EXCEL-01", routing, stockByCode, customScrapRates);
+
+      expect(eqQty).toBeCloseTo(855.54, 2);
+      expect(eqQty).not.toBe(1000);
+    });
+
+    it("Case 4: 2-step routing (D1 -> LR) off-by-one test: 1000 phoi at D1 yields 900 equivalent (D1 scrap 10%)", () => {
+      const routing2 = ["D1", "LR"];
+      const stockByCode: Record<string, StockState> = {
+        D1: { tonPhoi: 1000, tonThanhPham: 500 },
+        LR: { tonPhoi: 0, tonThanhPham: 200 },
+      };
+
+      const eqQty = computeEquivalentFinishedQty("SKU-2STEP", routing2, stockByCode, customScrapRates);
+
+      // tonPhoi D1: 1000 * (1 - 0.10) * (1 - 0) = 900
+      // tonThanhPham D1: 500 * (1 - 0) = 500
+      // tonThanhPham LR: 200 * 1 = 200
+      // Total = 900 + 500 + 200 = 1600
+      expect(eqQty).toBe(1600);
+    });
+
+    it("Case 5: 5-step routing (CUAPHOI -> D1 -> CK1 -> MNL -> LR) off-by-one test across long chain", () => {
+      const routing5 = ["CUAPHOI", "D1", "CK1", "MNL", "LR"];
+      const scrap5 = {
+        CUAPHOI: 0.01,
+        D1: 0.10,
+        CK1: 0.02,
+        MNL: 0.03,
+        LR: 0.00,
+      };
+
+      const stockByCode: Record<string, StockState> = {
+        CUAPHOI: { tonPhoi: 1000, tonThanhPham: 0 },
+        CK1: { tonPhoi: 500, tonThanhPham: 0 },
+      };
+
+      const eqQty = computeEquivalentFinishedQty("SKU-5STEP", routing5, stockByCode, scrap5);
+
+      // CUAPHOI phoi: 1000 * 0.99 * 0.90 * 0.98 * 0.97 * 1.00 = 846.9846
+      // CK1 phoi: 500 * 0.98 * 0.97 * 1.00 = 475.3
+      // Total = 846.9846 + 475.3 = 1322.2846
+      expect(eqQty).toBeCloseTo(1322.2846, 2);
+    });
+  });
+
+  it("Case 8: Parallel listPOs() and listWOs() with 5 records preserves exact input order and filters out deleted nulls", async () => {
+    await upsertProduct({
+      sku: "SKU-BATCH",
+      nameVi: "SP Batch Test",
+      routing: ["D1", "LR"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    const createdPOIds: string[] = [];
+    const createdWOIds: string[] = [];
+
+    // Create 5 POs and 5 WOs
+    for (let i = 1; i <= 5; i++) {
+      const po = await createPO({
+        poId: `PO-BATCH-0${i}`,
+        poNumber: `PO-BATCH-0${i}`,
+        customerName: `Khách Hàng ${i}`,
+        sku: "SKU-BATCH",
+        productNameVi: "SP Batch Test",
+        qty: 100 * i,
+        requestedDate: "2026-09-01",
+      });
+      createdPOIds.push(po.poId);
+
+      const wo = await createWO(po.poId, "admin");
+      createdWOIds.push(wo.woId);
+    }
+
+    // Call listPOs() and listWOs()
+    const allPOs = await listPOs();
+    const allWOs = await listWOs();
+
+    expect(allPOs).toHaveLength(5);
+    expect(allWOs).toHaveLength(5);
+
+    // Verify exact order preservation
+    expect(allPOs.map((p) => p.poId)).toEqual(createdPOIds);
+    expect(allWOs.map((w) => w.woId)).toEqual(createdWOIds);
+
+    // Test filtering out deleted null records (simulate orphaned ID in Redis set)
+    (redis as any).sadd("pos", "PO-DELETED-ORPHAN");
+    (redis as any).sadd("wos", "WO-DELETED-ORPHAN");
+
+    const allPOsWithOrphan = await listPOs();
+    const allWOsWithOrphan = await listWOs();
+
+    expect(allPOsWithOrphan).toHaveLength(5);
+    expect(allWOsWithOrphan).toHaveLength(5);
+    expect(allPOsWithOrphan.find((p) => p.poId === "PO-DELETED-ORPHAN")).toBeUndefined();
+    expect(allWOsWithOrphan.find((w) => w.woId === "WO-DELETED-ORPHAN")).toBeUndefined();
+  });
+
+  it("Case 9: Increasing WO targetQty recalculates plannedQty and automatically reverts DONE status to PENDING if actualQty < newPlannedQty", async () => {
+    await upsertProduct({
+      sku: "SKU-UPDATE-INC",
+      nameVi: "SP Test Increase Target",
+      routing: ["D1", "LR"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    const po = await createPO({
+      poId: "PO-INC-01",
+      poNumber: "PO-INC-01",
+      customerName: "Khách Tăng Qty",
+      sku: "SKU-UPDATE-INC",
+      productNameVi: "SP Test Increase Target",
+      qty: 100,
+      requestedDate: "2026-09-15",
+    });
+
+    const wo = await createWO(po.poId, "admin");
+
+    // Complete D1 step with 115 pcs (plannedQty is 112 for targetQty 100)
+    await recordWOProgress(wo.woId, "D1", 115, "worker1");
+    let woState = await getWO(wo.woId);
+    let d1Step = woState?.steps.find((s) => s.code === "D1");
+    expect(d1Step?.status).toBe("DONE");
+    expect(d1Step?.plannedQty).toBe(112);
+
+    // Increase targetQty to 200 -> D1 new plannedQty = ceil(200 / 0.9) = 223
+    const updatedWO = await updateWO(wo.woId, { targetQty: 200 });
+    d1Step = updatedWO.steps.find((s) => s.code === "D1");
+
+    expect(d1Step?.plannedQty).toBe(223);
+    // Since actualQty (115) < newPlannedQty (223), status MUST automatically revert to PENDING
+    expect(d1Step?.status).toBe("PENDING");
+  });
+
+  it("Case 10: Decreasing WO targetQty recalculates plannedQty, retains DONE status if actualQty >= newPlannedQty, and preserves actualQty without error", async () => {
+    await upsertProduct({
+      sku: "SKU-UPDATE-DEC",
+      nameVi: "SP Test Decrease Target",
+      routing: ["D1", "LR"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    const po = await createPO({
+      poId: "PO-DEC-01",
+      poNumber: "PO-DEC-01",
+      customerName: "Khách Giảm Qty",
+      sku: "SKU-UPDATE-DEC",
+      productNameVi: "SP Test Decrease Target",
+      qty: 200,
+      requestedDate: "2026-09-15",
+    });
+
+    const wo = await createWO(po.poId, "admin");
+
+    // Complete D1 step with 225 pcs
+    await recordWOProgress(wo.woId, "D1", 225, "worker1");
+    let d1Step = (await getWO(wo.woId))?.steps.find((s) => s.code === "D1");
+    expect(d1Step?.status).toBe("DONE");
+
+    // Decrease targetQty to 100 -> D1 new plannedQty = ceil(100 / 0.9) = 112
+    // actualQty (225) >= newPlannedQty (112) -> retains DONE status and preserves 225 actualQty
+    const updatedWO = await updateWO(wo.woId, { targetQty: 100 });
+    d1Step = updatedWO.steps.find((s) => s.code === "D1");
+
+    expect(d1Step?.plannedQty).toBe(112);
+    expect(d1Step?.actualQty).toBe(225);
+    expect(d1Step?.status).toBe("DONE");
+  });
+
+  it("Case 11: Real console.time benchmark measuring listPOs() and listWOs() execution speed with 25 records", async () => {
+    await upsertProduct({
+      sku: "SKU-BENCH",
+      nameVi: "SP Bench Test",
+      routing: ["D1", "LR"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    // Seed 25 POs and 25 WOs
+    for (let i = 1; i <= 25; i++) {
+      const po = await createPO({
+        poId: `PO-BENCH-${i}`,
+        poNumber: `PO-BENCH-${i}`,
+        customerName: `Khách Bench ${i}`,
+        sku: "SKU-BENCH",
+        productNameVi: "SP Bench Test",
+        qty: 100,
+        requestedDate: "2026-09-01",
+      });
+      await createWO(po.poId, "admin");
+    }
+
+    console.time("⏱️ listPOs() [25 records]");
+    const pos = await listPOs();
+    console.timeEnd("⏱️ listPOs() [25 records]");
+
+    console.time("⏱️ listWOs() [25 records]");
+    const wos = await listWOs();
+    console.timeEnd("⏱️ listWOs() [25 records]");
+
+    expect(pos.length).toBeGreaterThanOrEqual(25);
+    expect(wos.length).toBeGreaterThanOrEqual(25);
+  });
+
+  it("Case 12: Increasing WO targetQty on a READY_TO_SHIP WO automatically downgrades overall status back to IN_PROGRESS", async () => {
+    await upsertProduct({
+      sku: "SKU-SYNC-STATUS",
+      nameVi: "SP Test Sync Status",
+      routing: ["D1", "LR"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    const po = await createPO({
+      poId: "PO-SYNC-01",
+      poNumber: "PO-SYNC-01",
+      customerName: "Khách Ready To Ship",
+      sku: "SKU-SYNC-STATUS",
+      productNameVi: "SP Test Sync Status",
+      qty: 100,
+      requestedDate: "2026-09-20",
+    });
+
+    const wo = await createWO(po.poId, "admin");
+
+    // Complete all steps and close WO to status READY_TO_SHIP
+    await recordWOProgress(wo.woId, "D1", 120, "worker1");
+    await recordWOProgress(wo.woId, "LR", 100, "worker2");
+    const closedWO = await closeWO(wo.woId, "admin");
+    expect(closedWO.status).toBe("READY_TO_SHIP");
+
+    // Now increase targetQty to 200 -> LR plannedQty becomes 200, but LR actualQty is only 100
+    const updatedWO = await updateWO(wo.woId, { targetQty: 200 });
+
+    // Verify overall status is automatically downgraded to IN_PROGRESS
+    expect(updatedWO.status).toBe("IN_PROGRESS");
+    const lastStep = updatedWO.steps.find((s) => s.code === "LR");
+    expect(lastStep?.status).toBe("PENDING");
+  });
+
+  it("Case 13: Updating WO targetQty below shippedQty must be rejected with explicit error", async () => {
+    await upsertProduct({
+      sku: "SKU-REJECT-QTY",
+      nameVi: "SP Test Reject Qty",
+      routing: ["D1", "LR"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    const po = await createPO({
+      poId: "PO-REJECT-01",
+      poNumber: "PO-REJECT-01",
+      customerName: "Khách Xuất Hàng Rồi",
+      sku: "SKU-REJECT-QTY",
+      productNameVi: "SP Test Reject Qty",
+      qty: 100,
+      requestedDate: "2026-09-25",
+    });
+
+    const wo = await createWO(po.poId, "admin");
+
+    await recordWOProgress(wo.woId, "D1", 115, "worker1");
+    await recordWOProgress(wo.woId, "LR", 100, "worker2");
+    await closeWO(wo.woId, "admin");
+
+    // Record 60 pcs shipped
+    await recordShipment([wo.woId], { [wo.woId]: 60 }, "dispatcher1");
+
+    // Try to update targetQty to 50 (below shippedQty of 60) -> MUST REJECT
+    await expect(updateWO(wo.woId, { targetQty: 50 })).rejects.toThrow(
+      "Không thể giảm targetQty (50 pcs) xuống dưới số lượng đã xuất hàng (60 pcs)."
+    );
   });
 });

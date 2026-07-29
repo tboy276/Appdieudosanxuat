@@ -2,16 +2,31 @@ import { Redis } from "@upstash/redis";
 import bcrypt from "bcryptjs";
 import { WorkCenter, User } from "./types";
 
+const effectiveRedisUrl =
+  process.env.UPSTASH_REDIS_REST_URL_STAGING || process.env.UPSTASH_REDIS_REST_URL || "";
+const effectiveRedisToken =
+  process.env.UPSTASH_REDIS_REST_TOKEN_STAGING || process.env.UPSTASH_REDIS_REST_TOKEN || "";
+
 const isDummyOrMissing =
-  !process.env.UPSTASH_REDIS_REST_URL ||
-  process.env.UPSTASH_REDIS_REST_URL.includes("dummy-url") ||
-  !process.env.UPSTASH_REDIS_REST_TOKEN ||
-  process.env.UPSTASH_REDIS_REST_TOKEN.includes("dummy");
+  !effectiveRedisUrl ||
+  effectiveRedisUrl.includes("dummy-url") ||
+  !effectiveRedisToken ||
+  effectiveRedisToken.includes("dummy");
 
 // In-Memory Fallback Storage for Local Dev when Upstash Redis credentials are placeholder
 const inMemoryKV = new Map<string, any>();
 const inMemoryList = new Map<string, any[]>();
 const inMemorySet = new Map<string, Set<string>>();
+
+function getSeedAdminPassword(): string {
+  const seedPass = process.env.SEED_ADMIN_PASSWORD;
+  if (!seedPass || !seedPass.trim()) {
+    throw new Error(
+      "❌ LỖI HỆ THỐNG: Biến môi trường SEED_ADMIN_PASSWORD chưa được thiết lập. Vui lòng cấu hình SEED_ADMIN_PASSWORD trước khi thực hiện seed/reset."
+    );
+  }
+  return seedPass.trim();
+}
 
 // Auto-seed baseline master data in fallback mode
 async function initInMemorySeed() {
@@ -30,7 +45,7 @@ async function initInMemorySeed() {
     { code: "LR", name: "Xưởng Lắp Ráp", scrapRate: 0.00, isFinalStep: true },
   ];
 
-  const adminPass = await bcrypt.hash("Admin@123", 10);
+  const adminPass = await bcrypt.hash(getSeedAdminPassword(), 10);
   const adminUser: User = {
     id: "usr_admin_001",
     username: "admin",
@@ -49,8 +64,8 @@ if (isDummyOrMissing) {
 }
 
 const realUpstashClient = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL || "",
-  token: process.env.UPSTASH_REDIS_REST_TOKEN || "",
+  url: effectiveRedisUrl,
+  token: effectiveRedisToken,
 });
 
 export const redis = {
@@ -340,7 +355,7 @@ export async function resetSystemData(): Promise<void> {
     { code: "LR", name: "Xưởng Lắp Ráp", scrapRate: 0.00, isFinalStep: true },
   ];
 
-  const adminPass = await bcrypt.hash("Admin@123", 10);
+  const adminPass = await bcrypt.hash(getSeedAdminPassword(), 10);
   const adminUser: User = {
     id: "usr_admin_001",
     username: "admin",

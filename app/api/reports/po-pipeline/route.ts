@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listPOs, listWOs, PO, WO } from "@/lib/po-wo-engine";
+import { listPOs, listWOs, computeEquivalentFinishedQty, PO, WO } from "@/lib/po-wo-engine";
 import { getProduct } from "@/lib/products";
 import { getStockState } from "@/lib/inventory";
+import { StockState } from "@/lib/types";
 import { authorize, handleApiError } from "@/lib/auth";
 
 export type CoverageStatus = "SUFFICIENT" | "WIP_COVERED" | "SHORTAGE";
@@ -29,6 +30,7 @@ export interface POPipelineItem {
   totalPhoiWIP: number;
   totalThanhPhamWIP: number;
   totalStock: number;
+  totalEquivalentWIP: number;
   coverageStatus: CoverageStatus;
   poStatus: string;
   createdAt: string;
@@ -36,6 +38,7 @@ export interface POPipelineItem {
   routing: string[];
   steps: PipelineStep[];
   linkedWos: { woId: string; status: string }[];
+  warnings?: string[];
 }
 
 export async function GET(req: NextRequest) {
@@ -48,29 +51,61 @@ export async function GET(req: NextRequest) {
     // Active POs (status != "COMPLETED")
     const activePos = allPos.filter((po) => po.status !== "COMPLETED");
 
-    const pipelineItems: POPipelineItem[] = [];
+    // 1. Parallel fetch all Products for active POs using Promise.allSettled
+    const productSettledResults = await Promise.allSettled(
+      activePos.map((po) => getProduct(po.sku))
+    );
 
-    for (const po of activePos) {
-      const product = await getProduct(po.sku);
+    // 2. Process each PO with parallel stock fetching using Promise.allSettled per PO
+    const poPromises = activePos.map(async (po, poIdx) => {
+      const itemWarnings: string[] = [];
+      const prodRes = productSettledResults[poIdx];
+      let product = null;
+
+      if (prodRes.status === "fulfilled") {
+        product = prodRes.value;
+      } else {
+        const reasonStr = String(prodRes.reason || "Lỗi không xác định");
+        console.warn(`[PO-Pipeline] Lỗi khi lấy sản phẩm SKU ${po.sku} cho PO ${po.poId}:`, prodRes.reason);
+        itemWarnings.push(`Không thể tải dữ liệu SKU ${po.sku}: ${reasonStr}`);
+      }
+
+      if (!product) {
+        itemWarnings.push(`Không tìm thấy sản phẩm SKU ${po.sku} trong hệ thống.`);
+      } else if (product.needsRouting || !product.routing || product.routing.length === 0) {
+        itemWarnings.push(`Sản phẩm SKU ${po.sku} chưa được khai báo quy trình công nghệ (routing).`);
+      }
+
       const routing = product?.routing || [];
-
       const remainingQty = Math.max(0, po.qty - (po.shippedQty || 0));
+      const finishWsCode = routing.length > 0 ? routing[routing.length - 1] : "LR";
+      const linkedWos = allWos.filter((w) => w.poId === po.poId);
+
+      // Parallel fetch stock states for all routing steps of this PO using Promise.allSettled
+      const stockSettledResults = await Promise.allSettled(
+        routing.map((wcCode) => getStockState(wcCode, po.sku))
+      );
 
       let totalPhoiWIP = 0;
       let totalThanhPhamWIP = 0;
       let lrReadyQty = 0;
-
-      const finishWsCode = routing.length > 0 ? routing[routing.length - 1] : "LR";
-
-      // Linked WOs for this PO
-      const linkedWos = allWos.filter((w) => w.poId === po.poId);
-
+      const stockByCode: Record<string, StockState> = {};
       const steps: PipelineStep[] = [];
 
-      for (const wcCode of routing) {
-        const stock = await getStockState(wcCode, po.sku);
+      routing.forEach((wcCode, stepIdx) => {
+        const stockRes = stockSettledResults[stepIdx];
+        let stock: StockState = { tonPhoi: 0, tonThanhPham: 0 };
+        if (stockRes.status === "fulfilled") {
+          stock = stockRes.value;
+        } else {
+          const reasonStr = String(stockRes.reason || "Lỗi không xác định");
+          console.warn(`[PO-Pipeline] Lỗi khi lấy tồn kho xưởng ${wcCode} cho SKU ${po.sku}:`, stockRes.reason);
+          itemWarnings.push(`Thiếu dữ liệu tồn kho tại xưởng ${wcCode}: ${reasonStr}`);
+        }
+
         const tonPhoi = stock.tonPhoi || 0;
         const tonThanhPham = stock.tonThanhPham || 0;
+        stockByCode[wcCode] = { tonPhoi, tonThanhPham };
 
         totalPhoiWIP += tonPhoi;
         totalThanhPhamWIP += tonThanhPham;
@@ -79,7 +114,6 @@ export async function GET(req: NextRequest) {
           lrReadyQty = tonThanhPham;
         }
 
-        // Aggregate WO step progress if any
         let woPlanned = 0;
         let woActual = 0;
         let woStatus = "NO_WO";
@@ -101,21 +135,21 @@ export async function GET(req: NextRequest) {
           woActual,
           woStatus,
         });
-      }
+      });
 
-      // Determine coverageStatus
       const totalStock = totalPhoiWIP + totalThanhPhamWIP;
-      let coverageStatus: CoverageStatus = "SHORTAGE";
+      const totalEquivalentWIP = computeEquivalentFinishedQty(po.sku, routing, stockByCode);
 
+      let coverageStatus: CoverageStatus = "SHORTAGE";
       if (lrReadyQty >= remainingQty) {
         coverageStatus = "SUFFICIENT";
-      } else if (totalStock >= remainingQty) {
+      } else if (totalEquivalentWIP >= remainingQty) {
         coverageStatus = "WIP_COVERED";
       } else {
         coverageStatus = "SHORTAGE";
       }
 
-      pipelineItems.push({
+      return {
         poId: po.poId,
         poNumber: po.poNumber,
         customerName: po.customerName || "Khách Hàng Chưa Phân Loại",
@@ -129,6 +163,7 @@ export async function GET(req: NextRequest) {
         totalPhoiWIP,
         totalThanhPhamWIP,
         totalStock,
+        totalEquivalentWIP,
         coverageStatus,
         poStatus: po.status,
         createdAt: po.createdAt,
@@ -136,10 +171,12 @@ export async function GET(req: NextRequest) {
         routing,
         steps,
         linkedWos: linkedWos.map((w) => ({ woId: w.woId, status: w.status })),
-      });
-    }
+        warnings: itemWarnings.length > 0 ? itemWarnings : undefined,
+      };
+    });
 
-    return NextResponse.json(pipelineItems);
+    const items = await Promise.all(poPromises);
+    return NextResponse.json(items);
   } catch (err) {
     return handleApiError(err, "Không thể tải báo cáo dòng chảy PO & WIP.");
   }

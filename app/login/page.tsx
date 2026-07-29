@@ -123,7 +123,7 @@ export default function LoginPage() {
         <div className="p-3 bg-subtle border border-border rounded text-center space-y-1">
           <p className="text-[11px] font-semibold text-txt-secondary uppercase">Tài khoản mặc định sau Seed</p>
           <p className="text-xs text-txt-primary font-mono">
-            Username: <span className="font-bold">admin</span> | Password: <span className="font-bold">Admin@123</span>
+            Username: <span className="font-bold">admin</span> | Password: <span className="font-bold">Mật khẩu trong SEED_ADMIN_PASSWORD</span>
           </p>
         </div>
       </div>

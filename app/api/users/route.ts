@@ -85,10 +85,13 @@ export async function PATCH(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { id, role, password } = body;
+    const { id, username, role, password, status } = body;
 
-    if (!id) {
-      return NextResponse.json({ error: "Mã người dùng (id) là bắt buộc." }, { status: 400 });
+    if (!id && !username) {
+      return NextResponse.json(
+        { error: "Mã người dùng (id) hoặc Tên đăng nhập (username) là bắt buộc." },
+        { status: 400 }
+      );
     }
 
     const raw = await redis.get<User[] | string>("users");
@@ -98,7 +101,12 @@ export async function PATCH(req: NextRequest) {
         : raw
       : [];
 
-    const userIndex = users.findIndex((u) => u.id === id);
+    const userIndex = users.findIndex(
+      (u) =>
+        (id && u.id === id) ||
+        (username && u.username.toLowerCase() === String(username).trim().toLowerCase())
+    );
+
     if (userIndex === -1) {
       return NextResponse.json({ error: "Không tìm thấy người dùng." }, { status: 400 });
     }
@@ -113,8 +121,15 @@ export async function PATCH(req: NextRequest) {
       targetUser.role = role;
     }
 
+    if (status) {
+      if (status !== "ACTIVE" && status !== "LOCKED") {
+        return NextResponse.json({ error: "Trạng thái không hợp lệ (phải là ACTIVE hoặc LOCKED)." }, { status: 400 });
+      }
+      targetUser.status = status;
+    }
+
     if (password && password.trim().length > 0) {
-      targetUser.passwordHash = await bcrypt.hash(password, 10);
+      targetUser.passwordHash = await bcrypt.hash(password.trim(), 10);
     }
 
     users[userIndex] = targetUser;

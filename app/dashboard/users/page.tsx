@@ -18,6 +18,7 @@ import { useSession } from "@/hooks/useSession";
 import { UserRole } from "@/lib/types";
 
 interface UserAccount {
+  id?: string;
   username: string;
   role: UserRole;
   status: "ACTIVE" | "LOCKED";
@@ -116,6 +117,7 @@ export default function UsersPage() {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          id: targetUser.id,
           username: targetUser.username,
           status: nextStatus,
         }),
@@ -145,11 +147,14 @@ export default function UsersPage() {
 
     setIsSubmitting(true);
 
+    const targetObj = users.find((u) => u.username === selectedUserForReset);
+
     try {
       const res = await fetch("/api/users", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          id: targetObj?.id,
           username: selectedUserForReset,
           password: resetPasswordVal.trim(),
         }),

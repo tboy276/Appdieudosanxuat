@@ -134,7 +134,7 @@ import { POST as logoutHandler } from "./auth/logout/route";
 import { GET as getProductsHandler, POST as postProductsHandler } from "./products/route";
 import { POST as inputProductionHandler } from "./production/input/route";
 import { POST as transferPhoiHandler } from "./production/transfer/route";
-import { GET as getUsersHandler } from "./users/route";
+import { GET as getUsersHandler, PATCH as patchUsersHandler } from "./users/route";
 import { GET as getPoPipelineHandler } from "./reports/po-pipeline/route";
 import { POST as resetSystemHandler } from "./system/reset/route";
 import { createPO } from "@/lib/po-wo-engine";
@@ -143,10 +143,11 @@ import { signToken, AUTH_COOKIE_NAME } from "@/lib/auth";
 
 describe("API Routes & Security Integration Tests", () => {
   beforeEach(async () => {
+    process.env.SEED_ADMIN_PASSWORD = "TestAdminPass@2026";
     (await import("@/lib/redis")).redis.__reset();
     vi.clearAllMocks();
 
-    const adminPass = await bcrypt.hash("Admin@123", 10);
+    const adminPass = await bcrypt.hash("TestAdminPass@2026", 10);
     const viewerPass = await bcrypt.hash("Viewer@123", 10);
     const dispatcherPass = await bcrypt.hash("Dispatcher@123", 10);
 
@@ -179,7 +180,7 @@ describe("API Routes & Security Integration Tests", () => {
 
     const reqOk = createMockRequest("http://localhost:3000/api/auth/login", "POST", {
       username: "admin",
-      password: "Admin@123",
+      password: "TestAdminPass@2026",
     });
     const resOk = await loginHandler(reqOk);
     expect(resOk.status).toBe(200);
@@ -256,8 +257,8 @@ describe("API Routes & Security Integration Tests", () => {
     const poItem1 = data1.find((i: any) => i.poId === po.poId);
     expect(poItem1.coverageStatus).toBe("SHORTAGE");
 
-    // 2. Input 1000 phoi at D1 -> WIP_COVERED
-    await inputProduction("D1", "SKU-PIPE", 1000, "worker1", true, "WO-PIPE-1");
+    // 2. Input 1200 phoi at D1 -> WIP_COVERED (1200 * (1-0.10) = 1080 >= 1000 target Qty)
+    await inputProduction("D1", "SKU-PIPE", 1200, "worker1", true, "WO-PIPE-1");
     const res2 = await getPoPipelineHandler(req1);
     const data2 = await res2.json();
     const poItem2 = data2.find((i: any) => i.poId === po.poId);
@@ -288,5 +289,68 @@ describe("API Routes & Security Integration Tests", () => {
     expect(resAdmin.status).toBe(200);
     const data = await resAdmin.json();
     expect(data.success).toBe(true);
+  });
+
+  it("8. PO Pipeline Safety: handle missing product or draft product (needsRouting=true) gracefully without crash", async () => {
+    const token = signToken({ id: "u1", username: "admin", role: "ADMIN" });
+
+    // Create PO with non-existent product / missing routing SKU
+    const poDraft = await createPO({
+      poNumber: "PO-DRAFT-999",
+      customerName: "Khách Draft",
+      sku: "SKU-MISSING-PRODUCT",
+      productNameVi: "Sản phẩm chưa có routing",
+      qty: 500,
+      requestedDate: "2026-10-10",
+    });
+
+    const req = createMockRequest("http://localhost:3000/api/reports/po-pipeline", "GET", undefined, token);
+    const res = await getPoPipelineHandler(req);
+    expect(res.status).toBe(200);
+
+    const items = await res.json();
+    const draftItem = items.find((i: any) => i.poId === poDraft.poId);
+
+    expect(draftItem).toBeDefined();
+    expect(draftItem.totalEquivalentWIP).toBe(0);
+    expect(draftItem.coverageStatus).toBe("SHORTAGE");
+    expect(draftItem.routing).toEqual([]);
+    expect(draftItem.warnings).toBeDefined();
+    expect(draftItem.warnings.length).toBeGreaterThan(0);
+    expect(draftItem.warnings[0]).toContain("SKU-MISSING-PRODUCT");
+  });
+
+  it("9. PATCH /api/users: allow password reset and lock status update using username or id", async () => {
+    const adminToken = signToken({ id: "u1", username: "admin", role: "ADMIN" });
+
+    // 1. Reset password for admin specifying username (no id)
+    const reqReset = createMockRequest(
+      "http://localhost:3000/api/users",
+      "PATCH",
+      { username: "admin", password: "NewAdminPassword@2026" },
+      adminToken
+    );
+    const resReset = await patchUsersHandler(reqReset);
+    expect(resReset.status).toBe(200);
+
+    // Verify login with new password succeeds
+    const reqLoginNew = createMockRequest("http://localhost:3000/api/auth/login", "POST", {
+      username: "admin",
+      password: "NewAdminPassword@2026",
+    });
+    const resLoginNew = await loginHandler(reqLoginNew);
+    expect(resLoginNew.status).toBe(200);
+
+    // 2. Lock dispatcher user using id
+    const reqLock = createMockRequest(
+      "http://localhost:3000/api/users",
+      "PATCH",
+      { id: "u3", status: "LOCKED" },
+      adminToken
+    );
+    const resLock = await patchUsersHandler(reqLock);
+    expect(resLock.status).toBe(200);
+    const updatedDispatcher = await resLock.json();
+    expect(updatedDispatcher.status).toBe("LOCKED");
   });
 });

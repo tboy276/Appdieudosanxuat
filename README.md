@@ -50,37 +50,37 @@ git push -u origin main
 ### Bước 3: Deploy Lên Vercel
 1. Đăng nhập [Vercel Console](https://vercel.com/) và bấm **Add New Project**.
 2. Kết nối với tài khoản GitHub và chọn repository `mes-lite`.
-3. Tại phần **Environment Variables**, khai báo 3 biến môi trường bắt buộc:
+3. Tại phần **Environment Variables**, khai báo các biến môi trường bắt buộc:
 
 | Biến Môi Trường | Giá Trị mẫu | Mô Tả |
 | --- | --- | --- |
 | `UPSTASH_REDIS_REST_URL` | `https://xxxx.upstash.io` | URL kết nối REST API của Upstash DB |
 | `UPSTASH_REDIS_REST_TOKEN` | `AXXXXXX...` | Token xác thực REST API Upstash |
 | `JWT_SECRET` | `super-secret-key-32-chars-long-12345` | Secret key dùng mã hóa và giải mã JWT |
+| `SEED_ADMIN_PASSWORD` | `MySecretPass@2026!` | Mật khẩu Admin khởi tạo ban đầu (bắt buộc) |
 
 4. Bấm **Deploy**. Vercel sẽ tự động build và cung cấp domain thật dạng `https://mes-lite.vercel.app`.
 
 ---
 
 ### Bước 4: Khởi Tạo Dữ Liệu Ban Đầu (Seed Upstash Production)
-Để khởi tạo 10 xưởng sản xuất chuẩn và tài khoản Admin ban đầu trên Upstash Redis thật:
+Để khởi tạo 10 xưởng sản xuất chuẩn và tài khoản Admin ban đầu trên Upstash Redis thật, người vận hành **bắt buộc** phải cấu hình biến `SEED_ADMIN_PASSWORD`:
 
 Mở terminal trên máy local và chạy lệnh seed trỏ trực tiếp tới URL production của Upstash:
 
 ```bash
-UPSTASH_REDIS_REST_URL="https://xxxx.upstash.io" UPSTASH_REDIS_REST_TOKEN="AXXXXXX..." npm run seed
+UPSTASH_REDIS_REST_URL="https://xxxx.upstash.io" UPSTASH_REDIS_REST_TOKEN="AXXXXXX..." SEED_ADMIN_PASSWORD="MySecretPass@2026!" npm run seed
 ```
 
-Hoặc cập nhật vào file `.env.local` rồi chạy:
+Hoặc cập nhật `SEED_ADMIN_PASSWORD` vào file `.env.local` rồi chạy:
 
 ```bash
 npm run seed
 ```
 
-*Tài khoản Admin mặc định được khởi tạo:*
-- **Username**: `admin`
-- **Password**: `Admin@123`
-- **Role**: `ADMIN`
+> [!WARNING]
+> **BẮT BUỘC ĐỔI MẬT KHẨU SAU KHỞI TẠO:**  
+> Sau khi seed hoặc reset hệ thống lần đầu tiên, người quản trị **bắt buộc phải đăng nhập vào hệ thống và thực hiện đổi mật khẩu tài khoản Admin ngay lập tức**. Tuyệt đối không dùng mật khẩu seed ban đầu để vận hành lâu dài.
 
 ---
 
@@ -89,7 +89,7 @@ npm run seed
 Thực hiện quy trình kiểm thử trọn vẹn luồng nghiệp vụ sản xuất trên giao diện thật:
 
 1. **Đăng nhập**:
-   - Truy cập trang `/login` với tài khoản `admin` / `Admin@123`.
+   - Truy cập trang `/login` với tài khoản `admin` và mật khẩu đã cấu hình trong `SEED_ADMIN_PASSWORD`.
 2. **Khai báo tồn đầu kỳ**:
    - Gửi request `POST /api/inventory/opening` (hoặc qua giao diện) để thiết lập số dư ban đầu cho các xưởng công đoạn 1 (`CUAPHOI`, `D1`, `D2`, `R1`, `R2`).
 3. **Khai báo Sản Phẩm & Routing**:

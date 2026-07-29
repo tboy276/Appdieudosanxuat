@@ -19,9 +19,14 @@ if (fs.existsSync(envPath)) {
   }
 }
 
+const redisUrl =
+  process.env.UPSTASH_REDIS_REST_URL_STAGING || process.env.UPSTASH_REDIS_REST_URL || "";
+const redisToken =
+  process.env.UPSTASH_REDIS_REST_TOKEN_STAGING || process.env.UPSTASH_REDIS_REST_TOKEN || "";
+
 const redis = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL || "",
-  token: process.env.UPSTASH_REDIS_REST_TOKEN || "",
+  url: redisUrl,
+  token: redisToken,
 });
 
 const WORK_CENTERS: WorkCenter[] = [
@@ -53,7 +58,15 @@ async function seed() {
   console.log(`✅ Seeded ${WORK_CENTERS.length} work centers into key "workcenters".`);
 
   // 3. Seed Admin User
-  const passwordHash = await bcrypt.hash("Admin@123", 10);
+  const seedPassword = process.env.SEED_ADMIN_PASSWORD;
+  if (!seedPassword || !seedPassword.trim()) {
+    throw new Error(
+      "❌ LỖI KHỞI TẠO DỮ LIỆU: Biến môi trường SEED_ADMIN_PASSWORD chưa được thiết lập.\n" +
+      "Vui lòng khai báo SEED_ADMIN_PASSWORD trong file .env.local hoặc biến môi trường trước khi chạy seed."
+    );
+  }
+
+  const passwordHash = await bcrypt.hash(seedPassword.trim(), 10);
   const adminUser: User = {
     id: "usr_admin_001",
     username: "admin",

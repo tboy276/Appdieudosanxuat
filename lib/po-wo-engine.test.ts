@@ -11,10 +11,19 @@ vi.mock("./redis", () => {
         kvStore.set(key, val);
         return "OK";
       }),
+      del: vi.fn(async (key: string) => {
+        kvStore.delete(key);
+        return 1;
+      }),
       sadd: vi.fn(async (key: string, member: string) => {
         const set = setStore.get(key) || new Set<string>();
         set.add(member);
         setStore.set(key, set);
+        return 1;
+      }),
+      srem: vi.fn(async (key: string, member: string) => {
+        const set = setStore.get(key);
+        if (set) set.delete(member);
         return 1;
       }),
       smembers: vi.fn(async (key: string) => {
@@ -30,6 +39,11 @@ vi.mock("./redis", () => {
         kvStore.set(key, { ...existing, ...data });
         return 1;
       }),
+      hdel: vi.fn(async (key: string, field: string) => {
+        const hash = kvStore.get(key);
+        if (hash) delete hash[field];
+        return 1;
+      }),
       __reset: () => {
         kvStore.clear();
         setStore.clear();
@@ -38,9 +52,20 @@ vi.mock("./redis", () => {
   };
 });
 
-import { computeWOPlan, createPO, createWO, recordWOProgress, closeWO, recordShipment } from "./po-wo-engine";
+import {
+  computeWOPlan,
+  createPO,
+  updatePO,
+  deletePO,
+  createWO,
+  updateWO,
+  deleteWO,
+  recordWOProgress,
+  closeWO,
+  recordShipment,
+} from "./po-wo-engine";
 import { StockState } from "./types";
-import { upsertProduct } from "./products";
+import { upsertProduct, deleteProduct } from "./products";
 import { redis } from "./redis";
 
 describe("lib/po-wo-engine.ts - Order & Work Order Engine (Dual-State Model)", () => {
@@ -63,11 +88,6 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine (Dual-State Model)", (
 
     const plan = computeWOPlan("SKU-TEST-01", routing, targetQty, stockByCode, scrapRates);
 
-    // Hand-calculated expected values:
-    // LR  (scrap 0.00): ceil(100 / 1.00) = 100
-    // MNL (scrap 0.03): ceil(100 / 0.97) = 104
-    // CK1 (scrap 0.02): ceil(104 / 0.98) = 107
-    // D1  (scrap 0.10): ceil(107 / 0.90) = 119
     expect(plan).toEqual([
       { code: "D1", plannedQty: 119 },
       { code: "CK1", plannedQty: 107 },
@@ -85,11 +105,6 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine (Dual-State Model)", (
 
     const plan = computeWOPlan("SKU-TEST-02", routing, targetQty, stockByCode, scrapRates);
 
-    // Hand-calculated expected values:
-    // LR: requiredOut = max(0, 100 - 20) = 80. plannedQty = 80
-    // MNL: ceil(80 / 0.97) = 83
-    // CK1: ceil(83 / 0.98) = 85
-    // D1: ceil(85 / 0.90) = 95
     expect(plan).toEqual([
       { code: "D1", plannedQty: 95 },
       { code: "CK1", plannedQty: 85 },
@@ -107,11 +122,6 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine (Dual-State Model)", (
 
     const plan = computeWOPlan("SKU-TEST-03", routing, targetQty, stockByCode, scrapRates);
 
-    // Hand-calculated expected values:
-    // LR: 100
-    // MNL: 104
-    // CK1: 107
-    // D1: need = max(0, 107 - 50) = 57 -> ceil(57 / 0.90) = 64
     expect(plan).toEqual([
       { code: "D1", plannedQty: 64 },
       { code: "CK1", plannedQty: 107 },
@@ -196,5 +206,46 @@ describe("lib/po-wo-engine.ts - Order & Work Order Engine (Dual-State Model)", (
     expect(updatedWo2.status).toBe("SHIPPED");
     expect(updatedPo2.shippedQty).toBe(100);
     expect(updatedPo2.status).toBe("COMPLETED");
+  });
+
+  it("Case 6: Edit & Delete Safety Rules for SKU, PO and WO", async () => {
+    await upsertProduct({
+      sku: "SKU-DEL-01",
+      nameVi: "SP Test Delete",
+      routing: ["D1", "LR"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    });
+
+    const po = await createPO({
+      poNumber: "PO-DEL-01",
+      customerName: "Khách Cần Xóa",
+      sku: "SKU-DEL-01",
+      productNameVi: "SP Test Delete",
+      qty: 200,
+      requestedDate: "2026-09-10",
+    });
+
+    // SKU cannot be deleted when referenced by PO
+    await expect(deleteProduct("SKU-DEL-01")).rejects.toThrow(
+      "Không thể xóa SKU SKU-DEL-01 do đang có Đơn hàng PO (PO-DEL-01) liên quan."
+    );
+
+    // Create WO
+    const wo = await createWO(po.poId, "admin");
+
+    // PO cannot be deleted when referenced by WO
+    await expect(deletePO(po.poId)).rejects.toThrow("Không thể xóa PO");
+
+    // Record progress at D1
+    await recordWOProgress(wo.woId, "D1", 50, "worker1");
+
+    // WO cannot be deleted once actual production occurred
+    await expect(deleteWO(wo.woId)).rejects.toThrow("do đã có báo cáo sản lượng thực tế tại xưởng");
+
+    // Test successful edit of PO
+    const updatedPo = await updatePO(po.poId, { customerName: "Khách Cập Nhật" });
+    expect(updatedPo.customerName).toBe("Khách Cập Nhật");
   });
 });

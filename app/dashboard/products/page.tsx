@@ -96,6 +96,27 @@ export default function ProductsPage() {
     setIsModalOpen(true);
   };
 
+  const handleDeleteProduct = async (productSku: string) => {
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa sản phẩm SKU: ${productSku}?`)) return;
+
+    try {
+      const res = await fetch(`/api/products?sku=${encodeURIComponent(productSku)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Xóa sản phẩm thất bại.");
+        return;
+      }
+
+      setSuccessToast(`Đã xóa thành công sản phẩm SKU ${productSku}.`);
+      mutate();
+    } catch {
+      alert("Không thể kết nối đến máy chủ.");
+    }
+  };
+
   const handleAddTag = () => {
     const trimmed = legacyInput.trim();
     if (trimmed && !legacyTags.includes(trimmed)) {
@@ -174,7 +195,7 @@ export default function ProductsPage() {
       };
 
       const res = await fetch("/api/products", {
-        method: "POST",
+        method: editingProduct ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -305,13 +326,22 @@ export default function ProductsPage() {
               </span>
 
               {canWrite && (
-                <button
-                  onClick={() => openEditModal(product)}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-subtle border border-border hover:bg-border text-xs text-txt-primary font-medium transition-colors"
-                >
-                  <Edit2 className="w-3.5 h-3.5 text-txt-secondary" />
-                  <span>Chỉnh Sửa Routing / SKU</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => openEditModal(product)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-subtle border border-border hover:bg-border text-xs text-txt-primary font-medium transition-colors"
+                  >
+                    <Edit2 className="w-3.5 h-3.5 text-txt-secondary" />
+                    <span>Chỉnh Sửa</span>
+                  </button>
+                  <button
+                    onClick={() => handleDeleteProduct(product.sku)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-rose-50 border border-rose-200 hover:bg-rose-100 text-xs text-rose-700 font-medium transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Xóa SKU</span>
+                  </button>
+                </div>
               )}
             </div>
           </div>

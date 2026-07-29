@@ -72,6 +72,21 @@ export const redis = {
     return realUpstashClient.set(key, value);
   },
 
+  async del(...keys: string[]): Promise<number> {
+    if (isDummyOrMissing) {
+      await initInMemorySeed();
+      let count = 0;
+      for (const k of keys) {
+        if (inMemoryKV.has(k)) {
+          inMemoryKV.delete(k);
+          count++;
+        }
+      }
+      return count;
+    }
+    return realUpstashClient.del(...keys);
+  },
+
   async exists(key: string): Promise<number> {
     if (isDummyOrMissing) {
       await initInMemorySeed();
@@ -110,6 +125,23 @@ export const redis = {
     return realUpstashClient.hset(key, data);
   },
 
+  async hdel(key: string, ...fields: string[]): Promise<number> {
+    if (isDummyOrMissing) {
+      await initInMemorySeed();
+      const hash = inMemoryKV.get(key);
+      if (!hash) return 0;
+      let count = 0;
+      for (const f of fields) {
+        if (f in hash) {
+          delete hash[f];
+          count++;
+        }
+      }
+      return count;
+    }
+    return realUpstashClient.hdel(key, ...fields);
+  },
+
   async sadd(key: string, member: string): Promise<number> {
     if (isDummyOrMissing) {
       await initInMemorySeed();
@@ -119,6 +151,23 @@ export const redis = {
       return 1;
     }
     return realUpstashClient.sadd(key, member);
+  },
+
+  async srem(key: string, ...members: string[]): Promise<number> {
+    if (isDummyOrMissing) {
+      await initInMemorySeed();
+      const set = inMemorySet.get(key);
+      if (!set) return 0;
+      let count = 0;
+      for (const m of members) {
+        if (set.has(m)) {
+          set.delete(m);
+          count++;
+        }
+      }
+      return count;
+    }
+    return realUpstashClient.srem(key, ...members);
   },
 
   async smembers(key: string): Promise<string[]> {
@@ -154,7 +203,6 @@ export const redis = {
   async eval<T>(script: string, keys: string[], args: any[]): Promise<T> {
     if (isDummyOrMissing) {
       await initInMemorySeed();
-      // Emulate Lua script logic in In-Memory mode
       if (script.includes("TRANSFER_OUT") || keys.length === 7) {
         const [stateFromKey, stateToKey, openFromKey, openToKey, txFromKey, txToKey, activePairsKey] = keys;
         const [qtyStr, actor, woId, ts, fromCode, toCode, sku, today] = args;

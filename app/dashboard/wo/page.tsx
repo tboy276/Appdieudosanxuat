@@ -15,6 +15,7 @@ import {
   Lock,
   ArrowRight,
   Package,
+  Trash2,
 } from "lucide-react";
 import AccordionList from "@/components/AccordionList";
 import { WO, PO } from "@/lib/po-wo-engine";
@@ -114,6 +115,28 @@ export default function WOPage() {
       mutatePOs();
     } catch {
       alert("Đã xảy ra lỗi khi kết nối máy chủ.");
+    }
+  };
+
+  const handleDeleteWO = async (woId: string) => {
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa Lệnh sản xuất WO: ${woId}?`)) return;
+
+    try {
+      const res = await fetch(`/api/wo?woId=${encodeURIComponent(woId)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Xóa Lệnh sản xuất WO thất bại.");
+        return;
+      }
+
+      setToastMessage(`Đã xóa thành công Lệnh sản xuất WO ${woId}.`);
+      mutateWOs();
+      mutatePOs();
+    } catch {
+      alert("Không thể kết nối đến máy chủ.");
     }
   };
 
@@ -268,7 +291,7 @@ export default function WOPage() {
                                 isDone
                                   ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
                                   : "bg-subtle border border-border text-txt-secondary"
-                              }`}
+                                }`}
                             >
                               {isDone && <Check className="w-3 h-3 text-emerald-600" />}
                               <span>{step.status}</span>
@@ -281,30 +304,39 @@ export default function WOPage() {
                 </table>
               </div>
 
-              {/* Close WO Action Footer */}
-              <div className="flex items-center justify-between pt-2 border-t border-border">
+              {/* Close WO Action & Delete Footer */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2 border-t border-border">
                 <div className="flex items-center gap-1.5 text-xs text-txt-secondary">
                   {!isLastStepDone ? (
                     <span className="flex items-center gap-1 text-warning">
                       <Lock className="w-3.5 h-3.5" />
-                      <span>Bước lắp ráp cuối cùng ({lastStep?.code || "LR"}) chưa hoàn thành. Chưa thể đóng WO.</span>
+                      <span>Bước lắp ráp cuối cùng ({lastStep?.code || "LR"}) chưa hoàn thành.</span>
                     </span>
                   ) : (
                     <span className="flex items-center gap-1 text-emerald-600 font-medium">
                       <CheckCircle2 className="w-3.5 h-3.5" />
-                      <span>Bước lắp ráp cuối ({lastStep?.code}) đã hoàn thành! WO đủ điều kiện đóng.</span>
+                      <span>Bước lắp ráp cuối ({lastStep?.code}) đã hoàn thành!</span>
                     </span>
                   )}
                 </div>
 
-                <button
-                  onClick={() => handleCloseWO(wo.woId)}
-                  disabled={!canClose}
-                  className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded bg-accent text-white text-xs font-medium hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-opacity"
-                >
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Đóng WO (READY_TO_SHIP)</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleDeleteWO(wo.woId)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-rose-50 border border-rose-200 hover:bg-rose-100 text-xs text-rose-700 font-medium transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                    <span>Xóa WO</span>
+                  </button>
+                  <button
+                    onClick={() => handleCloseWO(wo.woId)}
+                    disabled={!canClose}
+                    className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded bg-accent text-white text-xs font-medium hover:opacity-90 disabled:opacity-30 disabled:cursor-not-allowed transition-opacity"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Đóng WO (READY_TO_SHIP)</span>
+                  </button>
+                </div>
               </div>
             </div>
           );
@@ -322,7 +354,6 @@ export default function WOPage() {
               </button>
             </div>
 
-            {/* Error Banner with Direct Redirect Button if Routing Missing */}
             {modalError && (
               <div className="p-3 rounded bg-amber-50 border border-amber-200 text-warning text-xs space-y-2">
                 <div className="flex items-center gap-2">

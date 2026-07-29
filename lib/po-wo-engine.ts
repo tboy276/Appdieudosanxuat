@@ -186,6 +186,37 @@ export async function createPO(
 }
 
 /**
+ * Update PO details
+ */
+export async function updatePO(poId: string, updates: Partial<PO>): Promise<PO> {
+  const existing = await getPO(poId);
+  if (!existing) throw new Error(`Không tìm thấy đơn hàng PO: ${poId}`);
+
+  const updated: PO = {
+    ...existing,
+    ...updates,
+    poId,
+  };
+
+  await redis.set(`po:${poId}`, updated);
+  return updated;
+}
+
+/**
+ * Delete PO with safety checks
+ */
+export async function deletePO(poId: string): Promise<void> {
+  const allWos = await listWOs();
+  const connectedWo = allWos.find((w) => w.poId === poId);
+  if (connectedWo) {
+    throw new Error(`Không thể xóa PO ${poId} do đã có Lệnh sản xuất WO (${connectedWo.woId}) liên quan. Vui lòng xóa WO trước.`);
+  }
+
+  await redis.del(`po:${poId}`);
+  await redis.srem("pos", poId);
+}
+
+/**
  * 2. createWO: Tạo Lệnh sản xuất (WO) từ PO
  */
 export async function createWO(poId: string, actor: string): Promise<WO> {
@@ -249,6 +280,54 @@ export async function createWO(poId: string, actor: string): Promise<WO> {
   }
 
   return wo;
+}
+
+/**
+ * Update WO details
+ */
+export async function updateWO(woId: string, updates: Partial<WO>): Promise<WO> {
+  const existing = await getWO(woId);
+  if (!existing) throw new Error(`Không tìm thấy Lệnh sản xuất WO: ${woId}`);
+
+  const updated: WO = {
+    ...existing,
+    ...updates,
+    woId,
+  };
+
+  await redis.set(`wo:${woId}`, updated);
+  return updated;
+}
+
+/**
+ * Delete WO with safety checks
+ */
+export async function deleteWO(woId: string): Promise<void> {
+  const existing = await getWO(woId);
+  if (!existing) throw new Error(`Không tìm thấy Lệnh sản xuất WO: ${woId}`);
+
+  if (existing.shippedQty > 0) {
+    throw new Error(`Không thể xóa Lệnh sản xuất WO ${woId} do đã có hàng xuất đi (${existing.shippedQty} pcs).`);
+  }
+
+  const hasActualQty = existing.steps?.some((s) => s.actualQty > 0);
+  if (hasActualQty) {
+    throw new Error(`Không thể xóa Lệnh sản xuất WO ${woId} do đã có báo cáo sản lượng thực tế tại xưởng.`);
+  }
+
+  await redis.del(`wo:${woId}`);
+  await redis.srem("wos", woId);
+
+  // Reset parent PO status to NEW if no remaining active WOs for that PO
+  const allWos = await listWOs();
+  const remainingWosForPo = allWos.filter((w) => w.poId === existing.poId && w.woId !== woId);
+  if (remainingWosForPo.length === 0) {
+    const parentPo = await getPO(existing.poId);
+    if (parentPo && parentPo.status === "IN_PRODUCTION") {
+      parentPo.status = "NEW";
+      await redis.set(`po:${parentPo.poId}`, parentPo);
+    }
+  }
 }
 
 /**

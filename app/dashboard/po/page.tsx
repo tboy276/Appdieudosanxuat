@@ -15,6 +15,8 @@ import {
   UploadCloud,
   ChevronRight,
   Filter,
+  Edit2,
+  Trash2,
 } from "lucide-react";
 import AccordionList from "@/components/AccordionList";
 import { PO, POStatus } from "@/lib/po-wo-engine";
@@ -54,8 +56,9 @@ export default function POPage() {
   // Modals state
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [editingPO, setEditingPO] = useState<PO | null>(null);
 
-  // Manual Form State
+  // Manual / Edit Form State
   const [poNumber, setPoNumber] = useState("");
   const [accountId, setAccountId] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -90,7 +93,62 @@ export default function POPage() {
     return matchQuery && matchStatus;
   });
 
-  // Manual PO Submit
+  const openCreateModal = () => {
+    setEditingPO(null);
+    setPoNumber("");
+    setAccountId("");
+    setCustomerName("");
+    setSku("");
+    setProductNameVi("");
+    setQty("");
+    setRequestedDate("");
+    setTolerance("");
+    setCurrency("VND");
+    setTechRequirement("");
+    setSpecialRequirement("");
+    setFormError("");
+    setIsManualModalOpen(true);
+  };
+
+  const openEditModal = (po: PO) => {
+    setEditingPO(po);
+    setPoNumber(po.poNumber);
+    setAccountId(po.accountId || "");
+    setCustomerName(po.customerName);
+    setSku(po.sku);
+    setProductNameVi(po.productNameVi);
+    setQty(String(po.qty));
+    setRequestedDate(po.requestedDate || "");
+    setTolerance(po.tolerance ? String(po.tolerance) : "");
+    setCurrency(po.currency || "VND");
+    setTechRequirement(po.techRequirement || "");
+    setSpecialRequirement(po.specialRequirement || "");
+    setFormError("");
+    setIsManualModalOpen(true);
+  };
+
+  const handleDeletePO = async (poId: string) => {
+    if (!window.confirm(`Bạn có chắc chắn muốn xóa đơn hàng PO: ${poId}?`)) return;
+
+    try {
+      const res = await fetch(`/api/po?poId=${encodeURIComponent(poId)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        alert(data.error || "Xóa đơn hàng PO thất bại.");
+        return;
+      }
+
+      setToastMessage(`Đã xóa thành công đơn hàng PO ${poId}.`);
+      mutatePOs();
+    } catch {
+      alert("Không thể kết nối đến máy chủ.");
+    }
+  };
+
+  // Manual PO Submit or Edit
   const handleManualSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError("");
@@ -105,32 +163,38 @@ export default function POPage() {
     try {
       const selectedProduct = products.find((p) => p.sku === sku);
 
-      const res = await fetch("/api/po", {
-        method: "POST",
+      const endpoint = "/api/po";
+      const method = editingPO ? "PUT" : "POST";
+
+      const payload = {
+        poId: editingPO?.poId,
+        poNumber: poNumber.trim() || `PO-${Date.now()}`,
+        accountId: accountId.trim(),
+        customerName: customerName.trim(),
+        sku: sku.trim(),
+        productNameVi: productNameVi.trim() || selectedProduct?.nameVi || sku,
+        qty: Number(qty),
+        requestedDate,
+        tolerance: tolerance ? Number(tolerance) : undefined,
+        currency,
+        techRequirement: techRequirement.trim(),
+        specialRequirement: specialRequirement.trim(),
+      };
+
+      const res = await fetch(endpoint, {
+        method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          poNumber: poNumber.trim() || `PO-${Date.now()}`,
-          accountId: accountId.trim(),
-          customerName: customerName.trim(),
-          sku: sku.trim(),
-          productNameVi: productNameVi.trim() || selectedProduct?.nameVi || sku,
-          qty: Number(qty),
-          requestedDate,
-          tolerance: tolerance ? Number(tolerance) : undefined,
-          currency,
-          techRequirement: techRequirement.trim(),
-          specialRequirement: specialRequirement.trim(),
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        setFormError(data.error || "Tạo đơn hàng PO thất bại.");
+        setFormError(data.error || "Lưu đơn hàng PO thất bại.");
         setIsSubmitting(false);
         return;
       }
 
-      setToastMessage(`Đã tạo thành công đơn hàng PO ${data.poNumber}.`);
+      setToastMessage(`Đã ${editingPO ? "cập nhật" : "tạo mới"} thành công đơn hàng PO ${data.poNumber}.`);
       setIsManualModalOpen(false);
       mutatePOs();
     } catch {
@@ -144,7 +208,6 @@ export default function POPage() {
   const parseExcelDate = (val: any): string => {
     if (!val) return new Date().toISOString().split("T")[0];
 
-    // If Excel serial number
     if (typeof val === "number") {
       const dateObj = XLSX.SSF.parse_date_code(val);
       if (dateObj) {
@@ -156,11 +219,9 @@ export default function POPage() {
     }
 
     const str = String(val).trim();
-    // Check if dd/mm/yyyy or d/m/yyyy
     const parts = str.split(/[/.-]/);
     if (parts.length === 3) {
       if (parts[2].length === 4) {
-        // Assume dd/mm/yyyy
         const dd = String(parts[0]).padStart(2, "0");
         const mm = String(parts[1]).padStart(2, "0");
         const yyyy = parts[2];
@@ -196,7 +257,6 @@ export default function POPage() {
           return;
         }
 
-        // Find header row (case insensitive column matching)
         let headerRowIndex = -1;
         let colMap: Record<string, number> = {};
 
@@ -215,7 +275,6 @@ export default function POPage() {
         }
 
         if (headerRowIndex === -1) {
-          // Fallback: assume first row is header
           headerRowIndex = 0;
           const row = rawData[0];
           if (row) {
@@ -244,7 +303,6 @@ export default function POPage() {
           const indexVal = String(getValue(row, ["index", "stt", "no"]) || "").trim();
           const firstCell = String(row[0] || "").trim().toLowerCase();
 
-          // Skip total rows or empty index
           if (firstCell.includes("total") || firstCell.includes("tổng") || (!indexVal && !getValue(row, ["ponumber", "po number"]))) {
             continue;
           }
@@ -259,7 +317,6 @@ export default function POPage() {
           const rawDate = getValue(row, ["expecteddeliverydate", "deliverydate", "requesteddate", "ngày giao hàng"]);
           const parsedDate = parseExcelDate(rawDate);
 
-          // Cross-reference product symbol with loaded products
           const matchedProduct = products.find(
             (p) =>
               p.sku.toLowerCase() === prodSym.toLowerCase() ||
@@ -379,7 +436,7 @@ export default function POPage() {
           </button>
 
           <button
-            onClick={() => setIsManualModalOpen(true)}
+            onClick={openCreateModal}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-accent text-white text-xs font-medium hover:opacity-90 transition-opacity"
           >
             <Plus className="w-4 h-4" />
@@ -422,7 +479,6 @@ export default function POPage() {
                   Đã xuất: <strong className="text-txt-primary">{po.shippedQty}</strong> / {po.qty} pcs
                 </span>
 
-                {/* Minimalist Status Badge */}
                 <span
                   className={`px-2.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${
                     isCompleted
@@ -479,16 +535,41 @@ export default function POPage() {
                 )}
               </div>
             )}
+
+            <div className="flex items-center justify-between pt-2 border-t border-border">
+              <span className="text-[11px] text-txt-secondary">
+                Tạo bởi: <strong className="text-txt-primary">{po.createdBy || "System"}</strong> lúc {new Date(po.createdAt).toLocaleString("vi-VN")}
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => openEditModal(po)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-subtle border border-border hover:bg-border text-xs text-txt-primary font-medium transition-colors"
+                >
+                  <Edit2 className="w-3.5 h-3.5 text-txt-secondary" />
+                  <span>Chỉnh Sửa PO</span>
+                </button>
+                <button
+                  onClick={() => handleDeletePO(po.poId)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded bg-rose-50 border border-rose-200 hover:bg-rose-100 text-xs text-rose-700 font-medium transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                  <span>Xóa PO</span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
       />
 
-      {/* Manual PO Entry Modal */}
+      {/* Manual / Edit PO Modal */}
       {isManualModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
           <div className="bg-canvas border border-border rounded shadow-lg max-w-lg w-full max-h-[90vh] overflow-y-auto p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-border pb-3">
-              <h3 className="text-sm font-bold text-txt-primary">Tạo Đơn Hàng PO Mới (Nhập Tay)</h3>
+              <h3 className="text-sm font-bold text-txt-primary">
+                {editingPO ? `Chỉnh Sửa Đơn Hàng: ${editingPO.poNumber}` : "Tạo Đơn Hàng PO Mới (Nhập Tay)"}
+              </h3>
               <button onClick={() => setIsManualModalOpen(false)} className="text-txt-secondary hover:text-txt-primary">
                 <X className="w-4 h-4" />
               </button>
@@ -598,7 +679,7 @@ export default function POPage() {
                   disabled={isSubmitting}
                   className="px-4 py-1.5 rounded bg-accent text-white font-medium hover:opacity-90 disabled:opacity-50"
                 >
-                  {isSubmitting ? "Đang tạo..." : "Xác Nhận Tạo PO"}
+                  {isSubmitting ? "Đang lưu..." : editingPO ? "Cập Nhật PO" : "Xác Nhận Tạo PO"}
                 </button>
               </div>
             </form>

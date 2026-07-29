@@ -1,5 +1,6 @@
 import { redis } from "./redis";
 import { Product } from "./types";
+import { listPOs, listWOs } from "./po-wo-engine";
 
 const PRODUCTS_KEY = "products";
 
@@ -90,4 +91,27 @@ export async function upsertProduct(product: Product): Promise<Product> {
   });
 
   return updatedProduct;
+}
+
+/**
+ * Delete a product by SKU
+ */
+export async function deleteProduct(sku: string): Promise<void> {
+  if (!sku) {
+    throw new Error("Mã SKU là bắt buộc để xóa.");
+  }
+
+  const [allPos, allWos] = await Promise.all([listPOs(), listWOs()]);
+
+  const poUsing = allPos.find((p) => p.sku === sku);
+  if (poUsing) {
+    throw new Error(`Không thể xóa SKU ${sku} do đang có Đơn hàng PO (${poUsing.poNumber}) liên quan.`);
+  }
+
+  const woUsing = allWos.find((w) => w.sku === sku);
+  if (woUsing) {
+    throw new Error(`Không thể xóa SKU ${sku} do đang có Lệnh sản xuất WO (${woUsing.woId}) liên quan.`);
+  }
+
+  await redis.hdel(PRODUCTS_KEY, sku);
 }

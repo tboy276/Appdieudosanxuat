@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { AUTH_COOKIE_NAME } from "@/lib/auth";
 
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  const token = req.cookies.get("auth_token")?.value;
+  const token = req.cookies.get(AUTH_COOKIE_NAME)?.value;
 
   // 1. Dashboard Route Protection
   if (pathname.startsWith("/dashboard")) {

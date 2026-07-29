@@ -1,11 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Factory, Lock, User as UserIcon, ArrowRight, AlertCircle } from "lucide-react";
 
 export default function LoginPage() {
-  const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -42,7 +40,8 @@ export default function LoginPage() {
         return;
       }
 
-      router.push("/dashboard/xnt");
+      // Perform full window redirect to ensure cookie & middleware state sync
+      window.location.href = "/dashboard/xnt";
     } catch {
       setError("Không thể kết nối đến máy chủ. Vui lòng thử lại sau.");
       setIsLoading(false);

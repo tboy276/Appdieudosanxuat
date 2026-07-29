@@ -316,43 +316,17 @@ export async function resetSystemData(): Promise<void> {
     return;
   }
 
-  // 1. Clear POs
-  const poIds = await redis.smembers("pos");
-  for (const id of poIds) {
-    await redis.del(`po:${id}`);
-  }
-  await redis.del("pos");
+  // 1. Fetch all keys in Upstash Redis
+  const allKeys = await realUpstashClient.keys("*");
 
-  // 2. Clear WOs
-  const woIds = await redis.smembers("wos");
-  for (const id of woIds) {
-    await redis.del(`wo:${id}`);
-  }
-  await redis.del("wos");
-
-  // 3. Clear Products
-  await redis.del("products");
-
-  // 4. Clear Shipments
-  const shipIds = await redis.smembers("shipments");
-  for (const id of shipIds) {
-    await redis.del(`shipment:${id}`);
-  }
-  await redis.del("shipments");
-
-  // 5. Clear Stock States & Ledgers
-  const activePairs = await redis.smembers("active_inventory_pairs");
-  for (const pair of activePairs) {
-    const [code, sku] = pair.split(":");
-    if (code && sku) {
-      await redis.del(`stock:${code}:${sku}`);
-      await redis.del(`opening:${code}:${sku}`);
-      await redis.del(`tx:${code}:${sku}`);
+  // 2. Delete all operational data keys (excluding workcenters & users)
+  for (const k of allKeys) {
+    if (k !== "workcenters" && k !== "users") {
+      await realUpstashClient.del(k);
     }
   }
-  await redis.del("active_inventory_pairs");
 
-  // 6. Re-seed default Workcenters and Admin User
+  // 3. Re-seed default Workcenters and Admin User
   const WORK_CENTERS: WorkCenter[] = [
     { code: "CUAPHOI", name: "Tổ cưa phôi PSX", scrapRate: 0.01, isFirstStep: true },
     { code: "D1", name: "Xưởng Đúc 1", scrapRate: 0.10, isFirstStep: true },
@@ -375,6 +349,6 @@ export async function resetSystemData(): Promise<void> {
     createdAt: new Date().toISOString(),
   };
 
-  await redis.set("workcenters", WORK_CENTERS);
-  await redis.set("users", [adminUser]);
+  await realUpstashClient.set("workcenters", WORK_CENTERS);
+  await realUpstashClient.set("users", [adminUser]);
 }

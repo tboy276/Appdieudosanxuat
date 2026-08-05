@@ -1,10 +1,12 @@
 export type UserRole = "ADMIN" | "DISPATCHER" | "VIEWER";
+export type UserStatus = "ACTIVE" | "LOCKED";
 
 export interface User {
   id: string;
   username: string;
   passwordHash: string;
   role: UserRole;
+  status?: UserStatus;
   createdAt: string;
 }
 
@@ -24,9 +26,13 @@ export interface StockState {
 export interface Product {
   sku: string;
   nameVi: string;
-  nameEn?: string;
-  legacySymbols?: string[];
+  customerNames?: string[];
+  customerName?: string;
+  rawWeight?: number;
+  material?: string;
   routing: string[];
+  routingScrapRates?: Record<string, number>;
+  routingLeadTimes?: Record<string, number>;
   unit: string;
   needsRouting?: boolean;
   createdAt: string;

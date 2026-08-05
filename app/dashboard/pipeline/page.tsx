@@ -2,6 +2,7 @@
 
 import React, { useState, useMemo } from "react";
 import useSWR from "swr";
+import DataTable, { ColumnDef } from "@/components/DataTable";
 import {
   Workflow,
   Search,
@@ -15,6 +16,13 @@ import {
   Layers,
   Building2,
 } from "lucide-react";
+
+import {
+  getTodayVN,
+  formatDateDisplay,
+  daysBetween,
+  createExcelDateCell,
+} from "@/lib/date-utils";
 
 interface PipelineStep {
   code: string;
@@ -51,16 +59,49 @@ interface POPipelineItem {
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
 function formatDate(dateStr?: string): string {
-  if (!dateStr) return "-";
-  try {
-    const d = new Date(dateStr);
-    if (isNaN(d.getTime())) return dateStr;
-    const day = String(d.getDate()).padStart(2, "0");
-    const month = String(d.getMonth() + 1).padStart(2, "0");
-    const year = d.getFullYear();
-    return `${day}/${month}/${year}`;
-  } catch {
-    return dateStr;
+  return formatDateDisplay(dateStr);
+}
+
+function getPipelineDeliveryAssessment(item: POPipelineItem): {
+  label: string;
+  badgeClass: string;
+} {
+  if (item.poStatus === "COMPLETED" || item.remainingQty === 0) {
+    return {
+      label: "Đã xong",
+      badgeClass: "bg-emerald-50 text-emerald-800 border border-emerald-200",
+    };
+  }
+
+  if (!item.requestedDate) {
+    return {
+      label: "Chưa có hạn",
+      badgeClass: "bg-subtle text-txt-secondary border border-border",
+    };
+  }
+
+  const todayStr = getTodayVN();
+  const diffDays = daysBetween(todayStr, item.requestedDate);
+
+  if (diffDays < 0 || (item.coverageStatus === "SHORTAGE" && diffDays <= 5)) {
+    return {
+      label: `Chắc chắn trễ (${diffDays < 0 ? `${Math.abs(diffDays)}d trễ` : `${diffDays}d còn`})`,
+      badgeClass: "bg-red-500/10 text-red-600 font-bold border border-red-500/30",
+    };
+  } else if (
+    item.coverageStatus === "SHORTAGE" ||
+    (item.coverageStatus === "WIP_COVERED" && diffDays <= 7) ||
+    diffDays <= 3
+  ) {
+    return {
+      label: `Rủi ro trễ (${diffDays}d còn)`,
+      badgeClass: "bg-amber-500/10 text-amber-600 font-semibold border border-amber-500/30",
+    };
+  } else {
+    return {
+      label: `Có khả năng kịp (${diffDays}d còn)`,
+      badgeClass: "bg-emerald-500/10 text-emerald-600 font-medium border border-emerald-500/30",
+    };
   }
 }
 
@@ -69,7 +110,6 @@ export default function POPipelineViewPage() {
     "/api/reports/po-pipeline",
     fetcher,
     {
-      refreshInterval: 5000,
       revalidateOnFocus: true,
     }
   );
@@ -78,9 +118,145 @@ export default function POPipelineViewPage() {
   const [coverageFilter, setCoverageFilter] = useState<string>("ALL");
   const [poStatusFilter, setPoStatusFilter] = useState<string>("ALL");
   const [customerFilter, setCustomerFilter] = useState<string>("ALL");
-  const [expandedRowIds, setExpandedRowIds] = useState<Record<string, boolean>>({});
+  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
 
   const poItems = useMemo(() => (Array.isArray(rawPoItems) ? rawPoItems : []), [rawPoItems]);
+
+  const pipelineColumns: ColumnDef<POPipelineItem>[] = useMemo(
+    () => [
+      {
+        key: "poNumber",
+        header: "Mã PO & Ngày Ký",
+        sortable: true,
+        headerClassName: "font-bold text-txt-primary",
+        render: (item) => (
+          <div className="space-y-0.5">
+            <span className="font-mono font-bold text-txt-primary block">{item.poNumber}</span>
+            <span className="text-[11px] text-txt-secondary font-mono block">{formatDate(item.createdAt)}</span>
+          </div>
+        ),
+      },
+      {
+        key: "customerName",
+        header: "Khách Hàng",
+        sortable: true,
+        render: (item) => <span className="font-medium text-txt-primary">{item.customerName}</span>,
+      },
+      {
+        key: "sku",
+        header: "Sản Phẩm Đặt Hàng",
+        sortable: true,
+        render: (item) => (
+          <div className="space-y-0.5">
+            <span className="font-mono font-bold text-xs text-txt-primary block">{item.sku}</span>
+            <span className="text-[11px] text-txt-secondary block truncate max-w-[180px]">{item.productNameVi}</span>
+          </div>
+        ),
+      },
+      {
+        key: "targetQty",
+        header: "SL Đặt PO",
+        sortable: true,
+        align: "right",
+        sortValue: (item) => item.targetQty,
+        render: (item) => <span className="font-bold font-mono text-txt-primary">{item.targetQty.toLocaleString()}</span>,
+      },
+      {
+        key: "shippedQty",
+        header: "Đã Xuất",
+        sortable: true,
+        align: "right",
+        sortValue: (item) => item.shippedQty,
+        render: (item) => <span className="font-mono text-emerald-600 font-semibold">{item.shippedQty.toLocaleString()}</span>,
+      },
+      {
+        key: "remainingQty",
+        header: "Còn Thiếu",
+        sortable: true,
+        align: "right",
+        sortValue: (item) => item.remainingQty,
+        render: (item) => <span className="font-mono font-semibold text-txt-primary">{item.remainingQty.toLocaleString()}</span>,
+      },
+      {
+        key: "finishWsCode",
+        header: "Điểm Hội Tụ",
+        sortable: true,
+        align: "center",
+        headerClassName: "bg-amber-50/50 text-amber-900 font-bold",
+        className: "bg-amber-50/30 font-bold text-amber-800 font-mono",
+        render: (item) => item.finishWsCode,
+      },
+      {
+        key: "lrReadyQty",
+        header: "Tồn Tại KTP / Nhu Cầu PO",
+        align: "center",
+        headerClassName: "bg-emerald-50/50 text-emerald-900 font-bold",
+        className: "bg-emerald-50/30 font-mono text-xs",
+        render: (item) => (
+          <div className="flex flex-col items-center gap-0.5">
+            <span className="font-bold text-txt-primary">
+              Tại KTP: {item.lrReadyQty.toLocaleString()} / PO: {item.targetQty.toLocaleString()} pcs
+            </span>
+            {item.lrReadyQty >= item.remainingQty ? (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/10 text-emerald-600 border border-emerald-500/30">
+                🟢 Đủ hàng xuất
+              </span>
+            ) : (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/10 text-red-600 border border-red-500/30">
+                🔴 Thiếu {item.remainingQty - item.lrReadyQty} pcs
+              </span>
+            )}
+          </div>
+        ),
+      },
+      {
+        key: "coverageStatus",
+        header: "Đánh Giá Mức Độ Rủi Ro",
+        sortable: true,
+        align: "center",
+        render: (item) => (
+          <>
+            {item.coverageStatus === "SUFFICIENT" && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                <CheckCircle2 className="w-3 h-3" />
+                <span>Đủ hàng xuất</span>
+              </span>
+            )}
+            {item.coverageStatus === "WIP_COVERED" && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                <AlertTriangle className="w-3 h-3" />
+                <span>Đủ WIP/Phôi</span>
+              </span>
+            )}
+            {item.coverageStatus === "SHORTAGE" && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                <AlertCircle className="w-3 h-3" />
+                <span>Thiếu phôi</span>
+              </span>
+            )}
+          </>
+        ),
+      },
+      {
+        key: "requestedDate",
+        header: "Hạn Giao Hàng",
+        sortable: true,
+        align: "center",
+        render: (item) => {
+          const deliveryAssessment = getPipelineDeliveryAssessment(item);
+          return (
+            <div className="flex flex-col items-center gap-1 font-mono">
+              <span className="font-semibold text-txt-primary">{formatDate(item.requestedDate)}</span>
+              <span className={`px-2 py-0.5 rounded text-[10px] tracking-wide ${deliveryAssessment.badgeClass}`}>
+                {deliveryAssessment.label}
+              </span>
+            </div>
+          );
+        },
+      },
+    ],
+    []
+  );
 
   // Distinct customer list for dropdown filter
   const customerList = useMemo(() => {
@@ -90,14 +266,6 @@ export default function POPipelineViewPage() {
     });
     return Array.from(set).sort();
   }, [poItems]);
-
-  // Toggle row expansion
-  const toggleRow = (poId: string) => {
-    setExpandedRowIds((prev) => ({
-      ...prev,
-      [poId]: !prev[poId],
-    }));
-  };
 
   // Filtered dataset
   const filteredItems = useMemo(() => {
@@ -269,7 +437,7 @@ export default function POPipelineViewPage() {
             <button
               onClick={() => mutate()}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-subtle border border-border text-xs font-medium text-txt-primary hover:bg-border transition-colors"
-              title="Làm mới dữ liệu"
+              title="Làm mới dữ liệu (Tự động cập nhật khi quay lại trang)"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isValidating ? "animate-spin text-accent" : ""}`} />
               <span>Làm mới</span>
@@ -278,252 +446,26 @@ export default function POPipelineViewPage() {
         </div>
       </div>
 
-      {/* Main Flat PO Matrix Table */}
+      {/* Main Shared DataTable for PO Pipeline */}
       {error ? (
         <div className="p-4 rounded bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
           <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
           <span>{error.message || "Đã xảy ra lỗi khi tải dữ liệu PO Pipeline."}</span>
         </div>
-      ) : !rawPoItems ? (
-        <div className="p-12 border border-border rounded bg-canvas text-center text-txt-secondary text-xs">
-          <div className="flex flex-col items-center justify-center gap-2">
-            <RefreshCw className="w-5 h-5 animate-spin text-txt-secondary" />
-            <span>Đang tải ma trận dòng chảy tồn kho PO...</span>
-          </div>
-        </div>
-      ) : filteredItems.length === 0 ? (
-        <div className="p-12 border border-border rounded bg-canvas text-center text-txt-secondary text-xs">
-          Không tìm thấy đơn hàng PO nào khớp với bộ lọc hiện tại.
-        </div>
       ) : (
-        <div className="border border-border rounded bg-canvas overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs tabular-nums border-collapse">
-              <thead>
-                <tr className="bg-subtle border-b border-border text-txt-secondary uppercase tracking-wider text-[10px] font-semibold">
-                  <th className="py-3 px-3 border-r border-border">Mã PO & Ngày Ký</th>
-                  <th className="py-3 px-3 border-r border-border">Khách Hàng</th>
-                  <th className="py-3 px-3 border-r border-border">Sản Phẩm Đặt Hàng</th>
-                  <th className="py-3 px-3 text-right border-r border-border">SL Đặt PO</th>
-                  <th className="py-3 px-3 text-right border-r border-border">Đã Xuất</th>
-                  <th className="py-3 px-3 text-right border-r border-border">Còn Thiếu</th>
-                  <th className="py-3 px-3 text-center border-r border-border bg-amber-50/50 text-amber-900 font-bold">
-                    Xưởng Cuối (Finish WS)
-                  </th>
-                  <th className="py-3 px-3 text-right border-r border-border bg-emerald-50/50 text-emerald-900 font-bold">
-                    Tồn Xưởng Cuối
-                  </th>
-                  <th className="py-3 px-3 text-center border-r border-border">Đánh Giá Mức Độ Rủi Ro</th>
-                  <th className="py-3 px-3 text-center border-r border-border">Hạn Giao Hàng</th>
-                  <th className="py-3 px-2 text-center w-12">Thao Tác</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {filteredItems.map((item) => {
-                  const isExpanded = Boolean(expandedRowIds[item.poId]);
-
-                  return (
-                    <React.Fragment key={item.poId}>
-                      <tr
-                        onClick={() => toggleRow(item.poId)}
-                        className={`transition-colors cursor-pointer hover:bg-subtle/60 ${
-                          isExpanded ? "bg-subtle/40" : ""
-                        }`}
-                      >
-                        {/* 1. Mã PO & Ngày Ký */}
-                        <td className="py-3 px-3 border-r border-border">
-                          <div className="space-y-0.5">
-                            <span className="font-mono font-bold text-txt-primary block">
-                              {item.poNumber}
-                            </span>
-                            <span className="text-[11px] text-txt-secondary font-mono block">
-                              {formatDate(item.createdAt)}
-                            </span>
-                          </div>
-                        </td>
-
-                        {/* 2. Khách Hàng */}
-                        <td className="py-3 px-3 border-r border-border font-medium text-txt-primary">
-                          {item.customerName}
-                        </td>
-
-                        {/* 3. Sản Phẩm Đặt Hàng */}
-                        <td className="py-3 px-3 border-r border-border">
-                          <div className="space-y-0.5">
-                            <span className="font-mono font-bold text-xs text-txt-primary block">
-                              {item.sku}
-                            </span>
-                            <span className="text-[11px] text-txt-secondary block truncate max-w-[180px]">
-                              {item.productNameVi}
-                            </span>
-                          </div>
-                        </td>
-
-                        {/* 4. SL Đặt PO */}
-                        <td className="py-3 px-3 text-right border-r border-border font-bold font-mono text-txt-primary">
-                          {item.targetQty.toLocaleString()}
-                        </td>
-
-                        {/* 5. Đã Xuất */}
-                        <td className="py-3 px-3 text-right border-r border-border font-mono text-emerald-600 font-semibold">
-                          {item.shippedQty.toLocaleString()}
-                        </td>
-
-                        {/* 6. Còn Thiếu */}
-                        <td className="py-3 px-3 text-right border-r border-border font-mono font-semibold text-txt-primary">
-                          {item.remainingQty.toLocaleString()}
-                        </td>
-
-                        {/* 7. Xưởng Cuối (Finish WS) - Highlighted */}
-                        <td className="py-3 px-3 text-center border-r border-border bg-amber-50/30 font-bold text-amber-800 font-mono">
-                          {item.finishWsCode}
-                        </td>
-
-                        {/* 8. Tồn Xưởng Cuối - Highlighted */}
-                        <td className="py-3 px-3 text-right border-r border-border bg-emerald-50/30 font-bold text-emerald-700 font-mono">
-                          {item.lrReadyQty.toLocaleString()} pcs
-                        </td>
-
-                        {/* 9. Đánh Giá Mức Độ Rủi Ro */}
-                        <td className="py-3 px-3 text-center border-r border-border">
-                          {item.coverageStatus === "SUFFICIENT" && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                              <CheckCircle2 className="w-3 h-3" />
-                              <span>Đủ hàng xuất</span>
-                            </span>
-                          )}
-
-                          {item.coverageStatus === "WIP_COVERED" && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 border border-amber-200">
-                              <AlertTriangle className="w-3 h-3" />
-                              <span>Đủ WIP/Phôi</span>
-                            </span>
-                          )}
-
-                          {item.coverageStatus === "SHORTAGE" && (
-                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
-                              <AlertCircle className="w-3 h-3" />
-                              <span>Thiếu phôi</span>
-                            </span>
-                          )}
-                        </td>
-
-                        {/* 10. Hạn Giao Hàng */}
-                        <td className="py-3 px-3 text-center border-r border-border font-mono text-txt-secondary">
-                          {formatDate(item.requestedDate)}
-                        </td>
-
-                        {/* 11. Thao Tác */}
-                        <td className="py-3 px-2 text-center text-txt-secondary">
-                          {isExpanded ? (
-                            <ChevronUp className="w-4 h-4 text-accent mx-auto" />
-                          ) : (
-                            <ChevronDown className="w-4 h-4 text-txt-secondary mx-auto" />
-                          )}
-                        </td>
-                      </tr>
-
-                      {/* Expandable Sub-Row (Rendered in --bg-subtle) */}
-                      {isExpanded && (
-                        <tr className="bg-subtle/50 border-b border-border">
-                          <td colSpan={11} className="p-4">
-                            <div className="space-y-2">
-                              <div className="flex items-center justify-between text-xs">
-                                <span className="font-semibold text-txt-primary flex items-center gap-1.5">
-                                  <Workflow className="w-3.5 h-3.5 text-accent" />
-                                  <span>Chi Tiết Dòng Chảy Routing Sản Xuất Của SKU {item.sku}:</span>
-                                </span>
-                                <span className="text-txt-secondary font-mono text-[11px]">
-                                  Quy trình: {item.routing.join(" → ")}
-                                </span>
-                              </div>
-
-                              <div className="border border-border rounded bg-canvas overflow-hidden">
-                                <table className="w-full text-left text-xs tabular-nums border-collapse">
-                                  <thead>
-                                    <tr className="bg-subtle border-b border-border text-txt-secondary text-[10px] font-semibold uppercase">
-                                      <th className="py-2 px-3 border-r border-border w-14 text-center">STT</th>
-                                      <th className="py-2 px-3 border-r border-border">Mã Xưởng</th>
-                                      <th className="py-2 px-3 border-r border-border text-right">Tồn Phôi (WIP)</th>
-                                      <th className="py-2 px-3 border-r border-border text-right">Tồn Thành Phẩm (WIP)</th>
-                                      <th className="py-2 px-3 text-right">Tiến Độ WO Thực Tế / Kế Hoạch</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-border">
-                                    {item.steps.map((st, idx) => (
-                                      <tr key={st.code} className="hover:bg-subtle/40">
-                                        <td className="py-2 px-3 text-center border-r border-border font-mono text-txt-secondary">
-                                          #{idx + 1}
-                                        </td>
-                                        <td className="py-2 px-3 border-r border-border font-semibold text-txt-primary">
-                                          {st.code}
-                                        </td>
-                                        <td className="py-2 px-3 border-r border-border text-right font-mono font-medium">
-                                          {st.tonPhoi > 0 ? (
-                                            <span className="text-amber-700">{st.tonPhoi.toLocaleString()} pcs</span>
-                                          ) : (
-                                            "0"
-                                          )}
-                                        </td>
-                                        <td className="py-2 px-3 border-r border-border text-right font-mono font-medium">
-                                          {st.tonThanhPham > 0 ? (
-                                            <span className="text-emerald-700">{st.tonThanhPham.toLocaleString()} pcs</span>
-                                          ) : (
-                                            "0"
-                                          )}
-                                        </td>
-                                        <td className="py-2 px-3 text-right font-mono">
-                                          {st.woPlanned ? (
-                                            <span className="inline-flex items-center gap-1.5">
-                                              <span>
-                                                {st.woActual?.toLocaleString()} / {st.woPlanned?.toLocaleString()} pcs
-                                              </span>
-                                              <span
-                                                className={`px-1.5 py-0.5 text-[10px] font-semibold rounded ${
-                                                  st.woStatus === "DONE"
-                                                    ? "bg-emerald-100 text-emerald-800"
-                                                    : "bg-amber-100 text-amber-800"
-                                                }`}
-                                              >
-                                                {st.woStatus}
-                                              </span>
-                                            </span>
-                                          ) : (
-                                            <span className="text-txt-secondary italic text-[11px]">Chưa tạo WO</span>
-                                          )}
-                                        </td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                  <tfoot>
-                                    <tr className="bg-subtle/80 font-bold border-t border-border">
-                                      <td colSpan={2} className="py-2 px-3 border-r border-border text-txt-primary">
-                                        Tổng Dở Dang Chuỗi (Phôi + TP)
-                                      </td>
-                                      <td className="py-2 px-3 border-r border-border text-right font-mono text-amber-700">
-                                        {item.totalPhoiWIP.toLocaleString()} pcs
-                                      </td>
-                                      <td className="py-2 px-3 border-r border-border text-right font-mono text-emerald-700">
-                                        {item.totalThanhPhamWIP.toLocaleString()} pcs
-                                      </td>
-                                      <td className="py-2 px-3 text-right font-mono text-txt-primary">
-                                        Tổng WIP: {item.totalStock.toLocaleString()} pcs
-                                      </td>
-                                    </tr>
-                                  </tfoot>
-                                </table>
-                              </div>
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </React.Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DataTable<POPipelineItem>
+          data={filteredItems}
+          columns={pipelineColumns}
+          getItemKey={(item) => item.poId}
+          selectable={true}
+          selectedKeys={selectedKeys}
+          onSelectionChange={setSelectedKeys}
+          enablePagination={true}
+          defaultPageSize={50}
+          isLoading={!rawPoItems}
+          loadingMessage="Đang tải ma trận dòng chảy tồn kho PO..."
+          emptyMessage="Không tìm thấy đơn hàng PO nào khớp với bộ lọc hiện tại."
+        />
       )}
     </div>
   );

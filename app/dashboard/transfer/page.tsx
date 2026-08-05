@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useSWRConfig } from "swr";
+import Link from "next/link";
 import {
   ArrowLeftRight,
   Factory,
@@ -149,6 +150,17 @@ export default function PhoiTransferPage() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
+      {/* Notice Banner */}
+      <div className="p-3 rounded bg-blue-50/50 border border-blue-200 text-blue-800 text-xs flex items-center justify-between">
+        <span>
+          💡 <strong>Khuyên dùng:</strong> Bạn có thể xuất chuyển xưởng nhanh hơn bằng nút <strong>"Chuyển"</strong> trực tiếp trên trang{" "}
+          <Link href="/dashboard/xnt" className="underline font-bold hover:text-blue-900">
+            Xuất Nhập Tồn theo Xưởng
+          </Link>
+          .
+        </span>
+      </div>
+
       {/* Header */}
       <div className="p-4 rounded bg-canvas border border-border flex items-center justify-between">
         <div className="flex items-center gap-2">

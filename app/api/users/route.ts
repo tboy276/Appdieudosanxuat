@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { redis } from "@/lib/redis";
-import { User, UserRole } from "@/lib/types";
+import { supabaseAdmin } from "@/lib/supabase";
+import { UserRole } from "@/lib/types";
 import { authorize, handleApiError } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
@@ -9,15 +9,25 @@ export async function GET(req: NextRequest) {
   if (response) return response;
 
   try {
-    const raw = await redis.get<User[] | string>("users");
-    const users: User[] = raw
-      ? typeof raw === "string"
-        ? JSON.parse(raw)
-        : raw
-      : [];
+    const { data: pgUsers, error: pgErr } = await supabaseAdmin
+      .from("users")
+      .select("id, username, full_name, role, status, created_at")
+      .order("created_at", { ascending: true });
 
-    const sanitizedUsers = users.map(({ passwordHash, ...user }) => user);
-    return NextResponse.json(sanitizedUsers);
+    if (pgErr) {
+      throw new Error(`Lỗi PostgreSQL khi tải danh sách người dùng: ${pgErr.message}`);
+    }
+
+    const sanitized = (pgUsers || []).map((u) => ({
+      id: u.id,
+      username: u.username,
+      fullName: u.full_name || u.username,
+      role: u.role,
+      status: u.status,
+      createdAt: u.created_at,
+    }));
+
+    return NextResponse.json(sanitized);
   } catch (err) {
     return handleApiError(err, "Không thể tải danh sách tài khoản người dùng.");
   }
@@ -29,7 +39,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { username, password, role } = body;
+    const { username, password, role, fullName } = body;
 
     if (!username || !password || !role) {
       return NextResponse.json(
@@ -46,34 +56,48 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const raw = await redis.get<User[] | string>("users");
-    const users: User[] = raw
-      ? typeof raw === "string"
-        ? JSON.parse(raw)
-        : raw
-      : [];
+    const cleanUsername = username.trim();
+    const passwordHash = await bcrypt.hash(password, 10);
 
-    if (users.some((u) => u.username.toLowerCase() === username.trim().toLowerCase())) {
+    // Check duplicate in Supabase PostgreSQL
+    const { data: existingPg } = await supabaseAdmin
+      .from("users")
+      .select("id")
+      .ilike("username", cleanUsername)
+      .maybeSingle();
+
+    if (existingPg) {
       return NextResponse.json(
-        { error: `Tên đăng nhập '${username}' đã tồn tại trong hệ thống.` },
+        { error: `Tên đăng nhập '${cleanUsername}' đã tồn tại trong hệ thống.` },
         { status: 400 }
       );
     }
 
-    const passwordHash = await bcrypt.hash(password, 10);
-    const newUser: User = {
-      id: `usr_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-      username: username.trim(),
-      passwordHash,
-      role,
-      createdAt: new Date().toISOString(),
-    };
+    // Insert into PostgreSQL
+    const { data: newUserPg, error: insertErr } = await supabaseAdmin
+      .from("users")
+      .insert({
+        username: cleanUsername,
+        password_hash: passwordHash,
+        full_name: fullName || cleanUsername,
+        role,
+        status: "ACTIVE",
+      })
+      .select("id, username, full_name, role, status, created_at")
+      .single();
 
-    users.push(newUser);
-    await redis.set("users", users);
+    if (insertErr) {
+      throw new Error(`Lỗi PostgreSQL khi khởi tạo tài khoản mới: ${insertErr.message}`);
+    }
 
-    const { passwordHash: _, ...sanitized } = newUser;
-    return NextResponse.json(sanitized);
+    return NextResponse.json({
+      id: newUserPg.id,
+      username: newUserPg.username,
+      fullName: newUserPg.full_name,
+      role: newUserPg.role,
+      status: newUserPg.status,
+      createdAt: newUserPg.created_at,
+    });
   } catch (err) {
     return handleApiError(err, "Tạo tài khoản người dùng mới thất bại.");
   }
@@ -94,49 +118,54 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    const raw = await redis.get<User[] | string>("users");
-    const users: User[] = raw
-      ? typeof raw === "string"
-        ? JSON.parse(raw)
-        : raw
-      : [];
-
-    const userIndex = users.findIndex(
-      (u) =>
-        (id && u.id === id) ||
-        (username && u.username.toLowerCase() === String(username).trim().toLowerCase())
-    );
-
-    if (userIndex === -1) {
-      return NextResponse.json({ error: "Không tìm thấy người dùng." }, { status: 400 });
-    }
-
-    const targetUser = users[userIndex];
-
+    const updates: any = {};
     if (role) {
       const validRoles: UserRole[] = ["ADMIN", "DISPATCHER", "VIEWER"];
       if (!validRoles.includes(role)) {
         return NextResponse.json({ error: "Vai trò không hợp lệ." }, { status: 400 });
       }
-      targetUser.role = role;
+      updates.role = role;
     }
 
     if (status) {
       if (status !== "ACTIVE" && status !== "LOCKED") {
         return NextResponse.json({ error: "Trạng thái không hợp lệ (phải là ACTIVE hoặc LOCKED)." }, { status: 400 });
       }
-      targetUser.status = status;
+      updates.status = status;
     }
 
     if (password && password.trim().length > 0) {
-      targetUser.passwordHash = await bcrypt.hash(password.trim(), 10);
+      updates.password_hash = await bcrypt.hash(password.trim(), 10);
     }
 
-    users[userIndex] = targetUser;
-    await redis.set("users", users);
+    // Update in Supabase PostgreSQL
+    let query = supabaseAdmin.from("users").update(updates);
+    if (id) {
+      query = query.eq("id", id);
+    } else if (username) {
+      query = query.ilike("username", String(username).trim());
+    }
 
-    const { passwordHash: _, ...sanitized } = targetUser;
-    return NextResponse.json(sanitized);
+    const { data: updatedPg, error: updateErr } = await query
+      .select("id, username, full_name, role, status, created_at")
+      .maybeSingle();
+
+    if (updateErr) {
+      throw new Error(`Lỗi PostgreSQL khi cập nhật thông tin người dùng: ${updateErr.message}`);
+    }
+
+    if (!updatedPg) {
+      return NextResponse.json({ error: "Không tìm thấy người dùng." }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      id: updatedPg.id,
+      username: updatedPg.username,
+      fullName: updatedPg.full_name,
+      role: updatedPg.role,
+      status: updatedPg.status,
+      createdAt: updatedPg.created_at,
+    });
   } catch (err) {
     return handleApiError(err, "Cập nhật người dùng thất bại.");
   }

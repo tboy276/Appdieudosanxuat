@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
-import { redis } from "@/lib/redis";
-import { User } from "@/lib/types";
-import { signToken, AUTH_COOKIE_NAME, handleApiError } from "@/lib/auth";
+import { signToken, handleApiError } from "@/lib/auth";
+import { supabaseAdmin } from "@/lib/supabase";
 
 export async function POST(req: NextRequest) {
   try {
@@ -10,51 +9,86 @@ export async function POST(req: NextRequest) {
     const { username, password } = body;
 
     if (!username || !password) {
-      return NextResponse.json({ error: "Tên đăng nhập và mật khẩu là bắt buộc." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Vui lòng nhập đầy đủ Tên đăng nhập và Mật khẩu." },
+        { status: 400 }
+      );
     }
 
-    const rawUsers = await redis.get<User[] | string>("users");
-    const users: User[] = rawUsers
-      ? typeof rawUsers === "string"
-        ? JSON.parse(rawUsers)
-        : rawUsers
-      : [];
+    const cleanUsername = username.trim();
 
-    const user = users.find((u) => u.username.toLowerCase() === username.trim().toLowerCase());
-    if (!user) {
-      return NextResponse.json({ error: "Tên đăng nhập hoặc mật khẩu không đúng." }, { status: 400 });
+    // Query user record directly from Supabase PostgreSQL public.users table
+    const { data: pgUser, error: pgErr } = await supabaseAdmin
+      .from("users")
+      .select("*")
+      .ilike("username", cleanUsername)
+      .maybeSingle();
+
+    if (pgErr) {
+      console.error("❌ PostgreSQL Users Query Error:", pgErr.message);
+      return NextResponse.json(
+        { error: `Lỗi kết nối cơ sở dữ liệu khi xác thực: ${pgErr.message}` },
+        { status: 500 }
+      );
     }
 
-    const isMatch = await bcrypt.compare(password, user.passwordHash);
-    if (!isMatch) {
-      return NextResponse.json({ error: "Tên đăng nhập hoặc mật khẩu không đúng." }, { status: 400 });
+    if (!pgUser) {
+      return NextResponse.json(
+        { error: "Tên đăng nhập hoặc mật khẩu không chính xác." },
+        { status: 401 }
+      );
     }
 
-    const token = signToken({
-      id: user.id,
-      username: user.username,
-      role: user.role,
+    if (pgUser.status === "INACTIVE") {
+      return NextResponse.json(
+        { error: "Tài khoản này đã bị khóa. Vui lòng liên hệ Admin." },
+        { status: 403 }
+      );
+    }
+
+    // Verify bcrypt password hash
+    const isValid = await bcrypt.compare(password, pgUser.password_hash);
+    if (!isValid) {
+      return NextResponse.json(
+        { error: "Tên đăng nhập hoặc mật khẩu không chính xác." },
+        { status: 401 }
+      );
+    }
+
+    // Sign JWT token
+    const tokenPayload = {
+      id: pgUser.id,
+      username: pgUser.username,
+      role: pgUser.role as any,
+    };
+
+    const token = signToken(tokenPayload);
+
+    const userResponse = {
+      id: pgUser.id,
+      username: pgUser.username,
+      fullName: pgUser.full_name || pgUser.username,
+      role: pgUser.role,
+      status: pgUser.status,
+      createdAt: pgUser.created_at,
+    };
+
+    const res = NextResponse.json({
+      success: true,
+      token,
+      user: userResponse,
     });
 
-    const response = NextResponse.json({
-      user: {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-      },
-    });
-
-    response.cookies.set({
-      name: AUTH_COOKIE_NAME,
-      value: token,
+    res.cookies.set("mes_token", token, {
       httpOnly: true,
-      path: "/",
+      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60, // 7 days
+      maxAge: 86400 * 7, // 7 days
+      path: "/",
     });
 
-    return response;
+    return res;
   } catch (err) {
-    return handleApiError(err, "Đăng nhập thất bại.");
+    return handleApiError(err, "Đã xảy ra lỗi hệ thống khi đăng nhập.");
   }
 }

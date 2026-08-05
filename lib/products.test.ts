@@ -1,57 +1,45 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// Mock Upstash Redis
-vi.mock("./redis", () => {
-  const store = new Map<string, any>();
-  return {
-    redis: {
-      hset: vi.fn(async (key: string, data: Record<string, any>) => {
-        let fieldMap = store.get(key) || {};
-        fieldMap = { ...fieldMap, ...data };
-        store.set(key, fieldMap);
-        return Object.keys(data).length;
-      }),
-      hget: vi.fn(async (key: string, field: string) => {
-        const fieldMap = store.get(key);
-        return fieldMap ? fieldMap[field] : null;
-      }),
-      hgetall: vi.fn(async (key: string) => {
-        return store.get(key) || null;
-      }),
-      __reset: () => store.clear(),
-    },
-  };
-});
-
-import { upsertProduct, listProducts, getProduct } from "./products";
+import { describe, it, expect, beforeEach } from "vitest";
+import {
+  normalizeProductRouting,
+  validateProductRouting,
+  upsertProduct,
+  listProducts,
+  getProduct,
+  deleteProduct,
+} from "./products";
 import { Product } from "./types";
-import { redis } from "./redis";
+import { seedWorkshops } from "../scripts/seed-workshops-supabase";
 
-describe("lib/products.ts - Product Catalog Management", () => {
-  beforeEach(() => {
-    (redis as any).__reset();
-    vi.clearAllMocks();
+describe("lib/products.ts - Product Catalog Management (Supabase PostgreSQL)", () => {
+  beforeEach(async () => {
+    // Ensure workshops seed table is populated
+    await seedWorkshops();
   });
 
-  it("should reject upsertProduct if routing is non-empty but the last step is not 'LR'", async () => {
-    const invalidProduct: Product = {
-      sku: "SKU-001",
+  it("should automatically append 'KTP' as the last step of routing when normalizing product routing", () => {
+    const routing = ["CUAPHOI", "CK1", "MNL"];
+    const normalized = normalizeProductRouting(routing);
+    expect(normalized).toEqual(["CUAPHOI", "CK1", "MNL", "KTP"]);
+  });
+
+  it("should reject upsertProduct if customerName / customerNames is missing", async () => {
+    const missingCustomerProduct: any = {
+      sku: "SKU-TEST-ERR1",
       nameVi: "Trục Vít Nâng",
-      routing: ["CUAPHOI", "CK1", "MNL"], // Missing "LR" at the end!
+      routing: ["CUAPHOI", "CK1", "MNL"],
       unit: "Cái",
-      createdAt: "",
-      updatedAt: "",
     };
 
-    await expect(upsertProduct(invalidProduct)).rejects.toThrow(
-      "Routing không hợp lệ: bước cuối cùng của routing bắt buộc phải là 'LR'"
+    await expect(upsertProduct(missingCustomerProduct)).rejects.toThrow(
+      "Khách hàng không được để rỗng"
     );
   });
 
   it("should reject upsertProduct if routing is empty and needsRouting is false or undefined", async () => {
     const invalidProduct: Product = {
-      sku: "SKU-002",
+      sku: "SKU-TEST-ERR2",
       nameVi: "Bánh Răng Nón",
+      customerName: "Khách Hàng Test",
       routing: [],
       unit: "Cái",
       needsRouting: false,
@@ -64,42 +52,78 @@ describe("lib/products.ts - Product Catalog Management", () => {
     );
   });
 
-  it("should accept upsertProduct when routing ends with 'LR'", async () => {
+  it("should upsert a valid product into Supabase and fetch it back", async () => {
+    const testSku = "SKU-SUPA-001";
     const validProduct: Product = {
-      sku: "SKU-003",
-      nameVi: "Vỏ Hộp Số",
+      sku: testSku,
+      nameVi: "Vỏ Hộp Số Supabase Test",
+      customerName: "Khách Hàng Test A",
       routing: ["D1", "CK2", "MNL", "LR"],
+      routingScrapRates: { D1: 10, CK2: 2, MNL: 3, LR: 0 },
+      routingLeadTimes: { D1: 2, CK2: 1, MNL: 1, LR: 1 },
       unit: "Bộ",
       createdAt: "",
       updatedAt: "",
     };
 
     const saved = await upsertProduct(validProduct);
-    expect(saved.sku).toBe("SKU-003");
-    expect(saved.routing).toEqual(["D1", "CK2", "MNL", "LR"]);
+    expect(saved.sku).toBe(testSku);
+    expect(saved.routing).toEqual(["D1", "CK2", "MNL", "LR", "KTP"]);
+    expect(saved.customerNames).toContain("Khách Hàng Test A");
 
-    const fetched = await getProduct("SKU-003");
+    const fetched = await getProduct(testSku);
     expect(fetched).not.toBeNull();
-    expect(fetched?.nameVi).toBe("Vỏ Hộp Số");
+    expect(fetched?.nameVi).toBe("Vỏ Hộp Số Supabase Test");
+    expect(fetched?.routingScrapRates?.D1).toBe(10);
   });
 
-  it("should allow empty routing temporarily if needsRouting is true", async () => {
-    const productNeedsRouting: Product = {
-      sku: "SKU-004",
-      nameVi: "Chi Tiết Mới Import",
-      routing: [],
+  it("should allow adding multiple customer names for the same SKU", async () => {
+    const testSku = "SKU-SUPA-MULTI";
+    const p1: Product = {
+      sku: testSku,
+      nameVi: "SP Test Multi Customer",
+      customerNames: ["Công ty Alpha"],
+      routing: ["D1", "KTP"],
       unit: "Cái",
-      needsRouting: true,
+      createdAt: "",
+      updatedAt: "",
+    };
+    await upsertProduct(p1);
+
+    const p1Multi: Product = {
+      sku: testSku,
+      nameVi: "SP Test Multi Customer",
+      customerNames: ["Công ty Alpha", "Công ty Beta"],
+      routing: ["D1", "KTP"],
+      unit: "Cái",
       createdAt: "",
       updatedAt: "",
     };
 
-    const saved = await upsertProduct(productNeedsRouting);
-    expect(saved.sku).toBe("SKU-004");
-    expect(saved.needsRouting).toBe(true);
+    const updated = await upsertProduct(p1Multi);
+    expect(updated.customerNames).toEqual(expect.arrayContaining(["Công ty Alpha", "Công ty Beta"]));
+    expect(updated.customerNames.length).toBe(2);
+  });
 
-    const list = await listProducts();
-    expect(list).toHaveLength(1);
-    expect(list[0].sku).toBe("SKU-004");
+  it("should delete product by SKU", async () => {
+    const testSku = "SKU-SUPA-DEL";
+    const productToDelete: Product = {
+      sku: testSku,
+      nameVi: "SP Xóa Test",
+      customerName: "Khách Hàng Temp",
+      routing: ["CK1", "KTP"],
+      unit: "Cái",
+      createdAt: "",
+      updatedAt: "",
+    };
+
+    await upsertProduct(productToDelete);
+    const beforeDel = await getProduct(testSku);
+    expect(beforeDel).not.toBeNull();
+
+    await deleteProduct(testSku);
+
+    const afterDel = await getProduct(testSku);
+    expect(afterDel).toBeNull();
   });
 });

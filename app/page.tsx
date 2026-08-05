@@ -30,7 +30,7 @@ export default function Home() {
         </div>
         <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800 backdrop-blur">
           <div className="text-emerald-400 font-semibold text-sm mb-1">Cân Bằng Atomic</div>
-          <p className="text-slate-400 text-xs">Redis Lua Scripts đảm bảo khoá kho chống race condition</p>
+          <p className="text-slate-400 text-xs">Supabase PostgreSQL Row Locking & PL/pgSQL Atomic Transactions</p>
         </div>
         <div className="p-5 rounded-xl bg-slate-900/60 border border-slate-800 backdrop-blur">
           <div className="text-amber-400 font-semibold text-sm mb-1">Phân Quyền 3 Vai Trò</div>

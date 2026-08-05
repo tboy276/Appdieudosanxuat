@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listProducts, upsertProduct, deleteProduct } from "@/lib/products";
+import { listProducts, upsertProduct, deleteProduct, bulkDeleteProducts } from "@/lib/products";
 import { authorize, handleApiError } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
@@ -41,22 +41,38 @@ export async function PUT(req: NextRequest) {
 }
 
 export async function DELETE(req: NextRequest) {
-  const { user, response } = authorize(req, ["ADMIN", "DISPATCHER"]);
+  const { response } = authorize(req, ["ADMIN", "DISPATCHER"]);
   if (response) return response;
 
   try {
     const { searchParams } = new URL(req.url);
-    const sku = searchParams.get("sku");
+    const singleSku = searchParams.get("sku");
 
-    if (!sku) {
+    if (singleSku) {
+      // Legacy single-delete
+      await deleteProduct(singleSku);
+      return NextResponse.json({ success: true, message: `Đã xóa sản phẩm ${singleSku} thành công.` });
+    }
+
+    // Bulk delete via JSON body
+    const body = await req.json().catch(() => ({}));
+    const skus: string[] = Array.isArray(body?.skus) ? body.skus : [];
+
+    if (skus.length === 0) {
       return NextResponse.json(
-        { error: "Tham số sku là bắt buộc để xóa sản phẩm." },
+        { error: "Vui lòng chọn ít nhất 1 sản phẩm để xóa." },
         { status: 400 }
       );
     }
 
-    await deleteProduct(sku);
-    return NextResponse.json({ success: true, message: `Đã xóa sản phẩm ${sku} thành công.` });
+    const result = await bulkDeleteProducts(skus);
+
+    const message =
+      result.rejectedCount === 0
+        ? `Đã xóa thành công ${result.deletedCount}/${skus.length} sản phẩm.`
+        : `Đã xóa thành công ${result.deletedCount}/${skus.length} sản phẩm. ${result.rejectedCount} mục bị từ chối.`;
+
+    return NextResponse.json({ success: true, message, ...result });
   } catch (err) {
     return handleApiError(err, "Xóa sản phẩm thất bại.");
   }

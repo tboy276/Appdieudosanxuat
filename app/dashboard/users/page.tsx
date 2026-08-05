@@ -193,10 +193,10 @@ export default function UsersPage() {
             setErrorMsg("");
             setIsCreateModalOpen(true);
           }}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-accent text-white text-xs font-medium hover:opacity-90 transition-opacity"
+          className="p-2 rounded bg-accent text-white hover:opacity-90 transition-opacity shadow-sm shrink-0"
+          title="Tạo tài khoản người dùng mới"
         >
           <UserPlus className="w-4 h-4" />
-          <span>Tạo Tài Khoản Mới</span>
         </button>
       </div>
 

@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { redis } from "@/lib/redis";
-import { recordShipment, getWO, ShipmentRecord } from "@/lib/po-wo-engine";
-import { recordShipmentXNT } from "@/lib/xnt-engine";
+import { createShipment, listShipments } from "@/lib/shipment";
+import { recordShipment } from "@/lib/wo-postgres";
 import { authorize, handleApiError } from "@/lib/auth";
 
 export async function GET(req: NextRequest) {
@@ -9,20 +8,12 @@ export async function GET(req: NextRequest) {
   if (response) return response;
 
   try {
-    const shipmentIds = await redis.smembers("shipments");
-    if (!shipmentIds || shipmentIds.length === 0) {
-      return NextResponse.json([]);
-    }
+    const { searchParams } = new URL(req.url);
+    const customerId = searchParams.get("customerId") || undefined;
+    const search = searchParams.get("search") || undefined;
 
-    const records: ShipmentRecord[] = [];
-    for (const id of shipmentIds) {
-      const raw = await redis.get<ShipmentRecord | string>(`shipment:${id}`);
-      if (raw) {
-        records.push(typeof raw === "string" ? JSON.parse(raw) : raw);
-      }
-    }
-
-    return NextResponse.json(records);
+    const shipments = await listShipments({ customerId, search });
+    return NextResponse.json(shipments);
   } catch (err) {
     return handleApiError(err, "Không thể tải danh sách chuyến xuất hàng.");
   }
@@ -34,28 +25,24 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { woIds, qtyByWoId, shipmentMeta } = body;
 
-    if (!woIds || !Array.isArray(woIds) || woIds.length === 0 || !qtyByWoId) {
+    // 1. Support WO-based shipment creation (from WO dashboard)
+    if (body.woIds && Array.isArray(body.woIds) && body.qtyByWoId) {
+      const record = await recordShipment(body.woIds, body.qtyByWoId, user!.username, body.shipmentMeta);
+      return NextResponse.json(record);
+    }
+
+    // 2. Support Customer Shipment creation (from Customer Shipment dashboard)
+    const { customerId, items, note } = body;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
       return NextResponse.json(
-        { error: "Mảng woIds và qtyByWoId là bắt buộc." },
+        { error: "Danh sách mặt hàng xuất (items) là bắt buộc." },
         { status: 400 }
       );
     }
 
-    const record = await recordShipment(woIds, qtyByWoId, user!.username, shipmentMeta);
-
-    // Deduct tonThanhPham at final workshop LR for each shipped WO
-    for (const woId of woIds) {
-      const shipQty = Number(qtyByWoId[woId] || 0);
-      if (shipQty <= 0) continue;
-      const wo = await getWO(woId);
-      if (!wo) continue;
-
-      const lastStepCode = wo.routing[wo.routing.length - 1] || "LR";
-      await recordShipmentXNT(lastStepCode, wo.sku, shipQty, user!.username, woId);
-    }
-
+    const record = await createShipment(customerId || "", items, user!.username, note);
     return NextResponse.json(record);
   } catch (err) {
     return handleApiError(err, "Ghi nhận xuất hàng thất bại.");

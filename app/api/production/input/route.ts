@@ -10,7 +10,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { wcCode, sku, actualQty, woId, customDate } = body;
+    const { wcCode, sku, actualQty, ngQty, woId, customDate } = body;
 
     if (!wcCode || !sku || !actualQty || Number(actualQty) <= 0) {
       return NextResponse.json(
@@ -20,6 +20,7 @@ export async function POST(req: NextRequest) {
     }
 
     const qtyNum = Number(actualQty);
+    const parsedNgQty = Math.max(0, Number(ngQty || 0));
 
     // Determine if wcCode is first step in product routing
     const product = await getProduct(sku);
@@ -29,7 +30,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Step 1: Physical Inventory Input (Throws if insufficient stock)
-    await inputProduction(wcCode, sku, qtyNum, user!.username, isFirstStep, woId, customDate);
+    await inputProduction(wcCode, sku, qtyNum, user!.username, isFirstStep, woId, customDate, parsedNgQty);
 
     // Step 2: WO Progress Update (Only executed if Step 1 succeeds)
     let updatedWO = null;

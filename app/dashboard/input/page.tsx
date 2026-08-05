@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useSWRConfig } from "swr";
+import Link from "next/link";
 import {
   Factory,
   Layers,
@@ -61,12 +62,10 @@ export default function ProductionInputPage() {
   // Filter WOs matching selected WorkCenter
   const availableWOs = wos.filter((wo) => {
     if (!selectedWc) return false;
-    const step = wo.steps?.find((s) => s.code === selectedWc);
-    return Boolean(step && step.status !== "DONE" && wo.status !== "SHIPPED");
+    return wo.wcCode === selectedWc && wo.status !== "SHIPPED";
   });
 
   const selectedWoObj = wos.find((w) => w.woId === selectedWoId);
-  const currentStep = selectedWoObj?.steps?.find((s) => s.code === selectedWc);
 
   // Find stock state for (selectedWc, selectedWoObj.sku) from XNT data
   const currentXNT = xntData.find(
@@ -132,6 +131,17 @@ export default function ProductionInputPage() {
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
+      {/* Notice Banner */}
+      <div className="p-3 rounded bg-blue-50/50 border border-blue-200 text-blue-800 text-xs flex items-center justify-between">
+        <span>
+          💡 <strong>Khuyên dùng:</strong> Bạn có thể báo cáo sản lượng nhanh hơn bằng nút <strong>"Nhập"</strong> trực tiếp trên trang{" "}
+          <Link href="/dashboard/xnt" className="underline font-bold hover:text-blue-900">
+            Xuất Nhập Tồn theo Xưởng
+          </Link>
+          .
+        </span>
+      </div>
+
       {/* Title & Instructions */}
       <div className="p-4 rounded bg-canvas border border-border flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -205,35 +215,32 @@ export default function ProductionInputPage() {
                 className="w-full px-3 py-2 text-sm bg-canvas border border-border rounded text-txt-primary focus:outline-none focus:border-accent"
               >
                 <option value="">-- Chọn WO Cần Báo Cáo --</option>
-                {availableWOs.map((wo) => {
-                  const st = wo.steps?.find((s) => s.code === selectedWc);
-                  return (
-                    <option key={wo.woId} value={wo.woId}>
-                      {wo.woId} | SKU: {wo.sku} | Kế hoạch: {st?.plannedQty || 0} pcs (Đã làm: {st?.actualQty || 0} pcs)
-                    </option>
-                  );
-                })}
+                {availableWOs.map((wo) => (
+                  <option key={wo.woId} value={wo.woId}>
+                    {wo.woId} | SKU: {wo.sku} | Kế hoạch: {wo.targetQty} pcs (Đã làm: {wo.shippedQty} pcs)
+                  </option>
+                ))}
               </select>
             )}
           </div>
         )}
 
         {/* Progress & Availability Card */}
-        {selectedWoObj && currentStep && (
+        {selectedWoObj && (
           <div className="p-4 rounded bg-subtle border border-border space-y-2 text-xs">
             <div className="flex items-center justify-between border-b border-border pb-2">
-              <span className="font-semibold text-txt-primary">Thông Tin Tiến Độ Bước {selectedWc}</span>
+              <span className="font-semibold text-txt-primary">Thông Tin Lệnh WO {selectedWc} (Bước {selectedWoObj.stepOrder}/{selectedWoObj.totalStepsInRouting})</span>
               <span className="font-mono text-txt-secondary">SKU: {selectedWoObj.sku}</span>
             </div>
 
             <div className="grid grid-cols-3 gap-2 text-center pt-1">
               <div className="p-2 rounded bg-canvas border border-border">
                 <p className="text-[10px] text-txt-secondary uppercase">Kế Hoạch (Planned)</p>
-                <p className="text-sm font-bold text-txt-primary font-mono mt-0.5">{currentStep.plannedQty} pcs</p>
+                <p className="text-sm font-bold text-txt-primary font-mono mt-0.5">{selectedWoObj.targetQty} pcs</p>
               </div>
               <div className="p-2 rounded bg-canvas border border-border">
-                <p className="text-[10px] text-txt-secondary uppercase">Đã Làm (Actual)</p>
-                <p className="text-sm font-bold text-emerald-600 font-mono mt-0.5">{currentStep.actualQty} pcs</p>
+                <p className="text-[10px] text-txt-secondary uppercase">Đã Xuất / Làm (Actual)</p>
+                <p className="text-sm font-bold text-emerald-600 font-mono mt-0.5">{selectedWoObj.shippedQty} pcs</p>
               </div>
               <div className="p-2 rounded bg-canvas border border-border">
                 <p className="text-[10px] text-txt-secondary uppercase">Khả Dụng Phôi</p>

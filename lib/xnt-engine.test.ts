@@ -153,4 +153,96 @@ describe("lib/xnt-engine.ts - Material Balance Engine (Dual-State Model)", () =>
 
     expect(txs && txs.length).toBeGreaterThanOrEqual(1);
   }, 15000);
+
+  it("Case 5: 5 SKUs with 5 POs and WOs (3 with opening stock, 2 without) — getXNTReport displays ALL routing steps for ALL 5 SKUs with 0s and supports immediate transactions", async () => {
+    const ts = Date.now();
+    const today = testDate;
+
+    // 1. Define 5 unique SKUs
+    const skus = [
+      `SKU-E2E-A-${ts}`,
+      `SKU-E2E-B-${ts}`,
+      `SKU-E2E-C-${ts}`,
+      `SKU-E2E-D-${ts}`,
+      `SKU-E2E-E-${ts}`,
+    ];
+
+    // Ensure workshops CUAPHOI, CK1, CK2, KTP exist
+    const { data: wsCUAPHOI } = await supabaseAdmin.from("workshops").select("id").eq("code", "CUAPHOI").single();
+    const { data: wsCK1 } = await supabaseAdmin.from("workshops").select("id").eq("code", "CK1").single();
+    const { data: wsCK2 } = await supabaseAdmin.from("workshops").select("id").eq("code", "CK2").single();
+    const { data: wsKTP } = await supabaseAdmin.from("workshops").select("id").eq("code", "KTP").single();
+
+    // 2. Create products with 2-step routing (CUAPHOI -> CK1, + implicit KTP = 3 rows per SKU)
+    for (const sku of skus) {
+      const { data: prod } = await supabaseAdmin
+        .from("products")
+        .upsert({ part_no: sku, name_vi: `Sản phẩm ${sku}`, unit: "Cái" }, { onConflict: "part_no" })
+        .select("id")
+        .single();
+
+      // Upsert routing: step 1 CUAPHOI, step 2 CK1
+      await supabaseAdmin.from("product_routings").delete().eq("product_id", prod!.id);
+      await supabaseAdmin.from("product_routings").insert([
+        { product_id: prod!.id, workshop_id: wsCUAPHOI!.id, step_order: 1, lead_time_days: 1 },
+        { product_id: prod!.id, workshop_id: wsCK1!.id, step_order: 2, lead_time_days: 1 },
+      ]);
+    }
+
+    // 3. Declare opening stock ONLY for the first 3 SKUs (skus[0], skus[1], skus[2]) on CK1
+    await declareOpeningStock("CK1", skus[0], { tonPhoi: 50, tonThanhPham: 10 }, "admin", today);
+    await declareOpeningStock("CK1", skus[1], { tonPhoi: 60, tonThanhPham: 20 }, "admin", today);
+    await declareOpeningStock("CK1", skus[2], { tonPhoi: 70, tonThanhPham: 30 }, "admin", today);
+    // skus[3] and skus[4] have NO opening stock declared anywhere
+
+    // 4. Fetch XNT Report
+    const report = await getXNTReport(today);
+
+    // Verify each of the 5 SKUs has rows for CUAPHOI, CK1, and KTP
+    for (const sku of skus) {
+      const skuRows = report.filter((r) => r.sku === sku);
+      const wsCodes = skuRows.map((r) => r.wcCode);
+
+      // Must contain CUAPHOI, CK1, and KTP
+      expect(wsCodes).toContain("CUAPHOI");
+      expect(wsCodes).toContain("CK1");
+      expect(wsCodes).toContain("KTP");
+      expect(skuRows.length).toBe(3);
+    }
+
+    // Verify skus[3] and skus[4] (no opening stock) have clean 0s across all columns
+    for (const sku of [skus[3], skus[4]]) {
+      const skuRows = report.filter((r) => r.sku === sku);
+      for (const row of skuRows) {
+        expect(row.opening.tonPhoi).toBe(0);
+        expect(row.opening.tonThanhPham).toBe(0);
+        expect(row.nhap.tonPhoi).toBe(0);
+        expect(row.nhap.tonThanhPham).toBe(0);
+        expect(row.xuat.tonPhoi).toBe(0);
+        expect(row.xuat.tonThanhPham).toBe(0);
+        expect(row.closing.tonPhoi).toBe(0);
+        expect(row.closing.tonThanhPham).toBe(0);
+      }
+    }
+
+    // 5. Test immediate transaction operation on skus[3] (which previously had 0 records)
+    // Production input at CUAPHOI
+    await inputProduction("CUAPHOI", skus[3], 100, "worker1", true, undefined, today);
+    // Transfer from CUAPHOI to CK1
+    await transferPhoi("CUAPHOI", "CK1", skus[3], 40, "dispatcher1", true, undefined, today);
+
+    // Re-fetch report and verify skus[3] updated immediately
+    const updatedReport = await getXNTReport(today, skus[3]);
+    const cuaphoiRow = updatedReport.find((r) => r.wcCode === "CUAPHOI" && r.sku === skus[3]);
+    const ck1Row = updatedReport.find((r) => r.wcCode === "CK1" && r.sku === skus[3]);
+
+    expect(cuaphoiRow).toBeDefined();
+    expect(cuaphoiRow!.nhap.tonThanhPham).toBe(100);
+    expect(cuaphoiRow!.xuat.tonThanhPham).toBe(40);
+    expect(cuaphoiRow!.closing.tonThanhPham).toBe(60);
+
+    expect(ck1Row).toBeDefined();
+    expect(ck1Row!.nhap.tonPhoi).toBe(40);
+    expect(ck1Row!.closing.tonPhoi).toBe(40);
+  }, 30000);
 });

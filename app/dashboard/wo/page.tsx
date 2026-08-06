@@ -412,19 +412,20 @@ export default function WOPage() {
 
   // 1-to-1 PO-WO Filter: Available POs to generate WO from (NEW or IN_PRODUCTION) AND NO existing WO
   const availablePOs = useMemo(() => {
-    const existingWoPoIds = new Set(wos.map((w) => w.poId));
+    const existingWoPoLineIds = new Set(wos.map((w) => w.poLineId || w.poId));
     return pos.filter(
       (po) =>
         (po.status === "NEW" || po.status === "IN_PRODUCTION") &&
-        !existingWoPoIds.has(po.poId)
+        !existingWoPoLineIds.has(po.poLineId || po.poId)
     );
   }, [pos, wos]);
 
   // Eligible POs for Bulk WO Creation
   const availablePOsForBulk = useMemo(() => {
-    const woCountByPoId: Record<string, number> = {};
+    const woCountByPoLineId: Record<string, number> = {};
     wos.forEach((w) => {
-      woCountByPoId[w.poId] = (woCountByPoId[w.poId] || 0) + 1;
+      const key = w.poLineId || w.poId;
+      woCountByPoLineId[key] = (woCountByPoLineId[key] || 0) + 1;
     });
 
     const productMap = new Map(products.map((p) => [p.sku, p]));
@@ -434,7 +435,8 @@ export default function WOPage() {
       .map((po) => {
         const prod = productMap.get(po.sku);
         const routing = prod?.routing?.filter((w) => w.toUpperCase() !== "KTP") || ["D1"];
-        const existingCount = woCountByPoId[po.poId] || 0;
+        const key = po.poLineId || po.poId;
+        const existingCount = woCountByPoLineId[key] || 0;
         const totalSteps = routing.length;
         const isComplete = existingCount >= totalSteps;
         return {
@@ -1442,11 +1444,14 @@ export default function WOPage() {
                     className="w-full px-3 py-2 bg-canvas border border-border rounded text-txt-primary font-mono focus:outline-none focus:border-accent"
                   >
                     <option value="">-- Chọn Đơn Hàng PO --</option>
-                    {availablePOs.map((po) => (
-                      <option key={po.poId} value={po.poId}>
-                        {po.poNumber} | KH: {po.customerName} | SKU: {po.sku} | Qty: {po.qty} pcs
-                      </option>
-                    ))}
+                    {availablePOs.map((po) => {
+                      const key = po.poLineId || po.poId;
+                      return (
+                        <option key={key} value={key}>
+                          {po.poNumber} | KH: {po.customerName} | SKU: {po.sku} | Qty: {po.qty} pcs
+                        </option>
+                      );
+                    })}
                   </select>
                 )}
               </div>

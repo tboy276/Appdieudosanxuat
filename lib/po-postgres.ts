@@ -665,9 +665,7 @@ export async function bulkCreatePOs(
     );
   }
 
-  const createdList = await listPOs();
-  const createdIdsSet = new Set(allPoIds.map((id) => id.toLowerCase()));
-  return createdList.filter((p) => createdIdsSet.has(p.poId.toLowerCase()));
+  return linesToInsert.map(r => ({ poId: r.po_id, sku: r.product_id } as any));
 }
 
 /**
@@ -851,20 +849,6 @@ export async function deletePO(poId: string): Promise<void> {
   if (!existing) return;
 
   const poNumber = existing.poNumber || existing.poId;
-
-  // Check active WOs in transition Redis state (before WO migration)
-  try {
-    const { listWOs } = await import("./po-wo-engine");
-    const allWos = await listWOs();
-    const connectedWo = allWos.find(
-      (w) => w.poId === existing.poId || w.poNumber === existing.poNumber || (existing.poLineId && (w as any).poLineId === existing.poLineId)
-    );
-    if (connectedWo) {
-      throw new Error(`Không thể xóa PO ${existing.poNumber || poId} do đã có Lệnh sản xuất (WO) liên quan. Vui lòng xóa WO trước.`);
-    }
-  } catch (e: any) {
-    if (e.message && e.message.includes("Không thể xóa")) throw e;
-  }
 
   // Case A: Deleting a single PO line (when poId passed is poLineId and not the whole PO header id)
   const isSpecificLine =

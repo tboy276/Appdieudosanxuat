@@ -732,7 +732,7 @@ export default function POPage() {
             onClick={() => {
               if (selectedPoKeys.size !== 1) return;
               const selectedPoId = Array.from(selectedPoKeys)[0];
-              const poToEdit = pos.find((p) => p.poId === selectedPoId);
+              const poToEdit = pos.find((p) => (p.poLineId || p.poId) === selectedPoId);
               if (poToEdit) openEditModal(poToEdit);
             }}
             disabled={selectedPoKeys.size !== 1}
@@ -819,7 +819,7 @@ export default function POPage() {
       <DataTable<PO>
         data={filteredPOs}
         columns={poColumns}
-        getItemKey={(po) => po.poId}
+        getItemKey={(po) => po.poLineId || po.poId}
         selectable={true}
         selectedKeys={selectedPoKeys}
         onSelectionChange={setSelectedPoKeys}

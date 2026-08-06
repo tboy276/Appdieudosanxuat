@@ -585,22 +585,25 @@ export async function deleteProduct(sku: string): Promise<void> {
 
   const cleanSku = sku.trim();
 
-  // Check active POs & WOs in PostgreSQL
-  try {
-    const [allPos, allWos] = await Promise.all([listPOs(), listWOs()]);
+  // Check active POs & WOs in PostgreSQL using optimized COUNT queries
+  const { data: productData } = await supabaseAdmin.from("products").select("id").eq("part_no", cleanSku).single();
+  if (productData) {
+    const { count: poCount } = await supabaseAdmin
+      .from("po_lines")
+      .select("*", { count: "exact", head: true })
+      .eq("product_id", productData.id);
 
-    const poUsing = allPos.find((p) => p.sku === cleanSku);
-    if (poUsing) {
-      throw new Error(`Không thể xóa SKU ${cleanSku} do đang có Đơn hàng PO (${poUsing.poNumber || poUsing.poId}) liên quan.`);
+    if (poCount && poCount > 0) {
+      throw new Error(`Không thể xóa SKU ${cleanSku} do đang có Đơn hàng PO liên quan.`);
     }
 
-    const woUsing = allWos.find((w) => w.sku === cleanSku);
-    if (woUsing) {
-      throw new Error(`Không thể xóa SKU ${cleanSku} do đang có Lệnh sản xuất WO (${woUsing.woId}) liên quan.`);
-    }
-  } catch (e: any) {
-    if (e.message && e.message.includes("Không thể xóa SKU")) {
-      throw e;
+    const { count: woCount } = await supabaseAdmin
+      .from("work_orders")
+      .select("*", { count: "exact", head: true })
+      .eq("product_id", productData.id);
+
+    if (woCount && woCount > 0) {
+      throw new Error(`Không thể xóa SKU ${cleanSku} do đang có Lệnh sản xuất WO liên quan.`);
     }
   }
 

@@ -555,9 +555,7 @@ export async function createWOsForPO(
         await updatePO(po.poId, { status: "IN_PRODUCTION" });
       }
 
-      const allWos = await listWOs({ poId: po.poId });
-      const insertedIdSet = new Set((insertedRows || []).map((r) => r.id));
-      createdWos = allWos.filter((w) => insertedIdSet.has(w.woId));
+      createdWos = (insertedRows || []).map((r) => ({ woId: r.id } as any));
     }
 
     return { createdWos, skippedCount };
@@ -573,8 +571,13 @@ export async function createWO(
 ): Promise<WO> {
   const { createdWos } = await createWOsForPO(poId, actor, customPlannedQtysMap);
   if (createdWos.length === 0) {
-    const existing = await listWOs({ poId });
-    if (existing.length > 0) return existing[0];
+    const { data: existingRows } = await supabaseAdmin
+      .from("work_orders")
+      .select("id")
+      .eq("po_line_id", poId)
+      .limit(1);
+
+    if (existingRows && existingRows.length > 0) return { woId: existingRows[0].id } as any;
     throw new Error(`Đã tồn tại Lệnh sản xuất cho PO ${poId}.`);
   }
   return createdWos[0];

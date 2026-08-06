@@ -64,7 +64,7 @@ function parseRoutingWithMeta(
 
     routing.push(code);
     if (code !== "KTP") {
-      routingScrapRates[code] = isNaN(rate) ? 10 : rate;
+      routingScrapRates[code] = isNaN(rate) ? (code.startsWith("CK") ? 5 : 10) : rate;
       routingLeadTimes[code] = isNaN(leadTime) ? 3 : leadTime;
     }
   }

@@ -61,7 +61,7 @@ export default function ProductsPage() {
   const [material, setMaterial] = useState("");
   const [unit, setUnit] = useState("Cái");
   const [routingSteps, setRoutingSteps] = useState<string[]>(["D1", "CK1", "KTP"]);
-  const [routingScrapRates, setRoutingScrapRates] = useState<Record<string, number>>({ D1: 10, CK1: 10 });
+  const [routingScrapRates, setRoutingScrapRates] = useState<Record<string, number>>({ D1: 10, CK1: 5 });
   const [routingLeadTimes, setRoutingLeadTimes] = useState<Record<string, number>>({ D1: 3, CK1: 3 });
   const [needsRouting, setNeedsRouting] = useState(false);
 
@@ -128,7 +128,7 @@ export default function ProductsPage() {
     setMaterial("");
     setUnit("Cái");
     setRoutingSteps(["D1", "CK1", "KTP"]);
-    setRoutingScrapRates({ D1: 10, CK1: 10 });
+    setRoutingScrapRates({ D1: 10, CK1: 5 });
     setRoutingLeadTimes({ D1: 3, CK1: 3 });
     setNeedsRouting(false);
     setOpeningStockMap({});
@@ -156,7 +156,7 @@ export default function ProductsPage() {
     const defaultLeadTimes: Record<string, number> = {};
     (p.routing || ["D1"]).forEach((wc) => {
       if (wc.toUpperCase() !== "KTP") {
-        defaultScrapRates[wc] = p.routingScrapRates?.[wc] ?? 10;
+        defaultScrapRates[wc] = p.routingScrapRates?.[wc] ?? (wc.startsWith("CK") ? 5 : 10);
         defaultLeadTimes[wc] = p.routingLeadTimes?.[wc] ?? 3;
       }
     });
@@ -236,7 +236,7 @@ export default function ProductsPage() {
     setRoutingSteps([...routingSteps, code]);
     if (code.toUpperCase() !== "KTP") {
       if (typeof routingScrapRates[code] !== "number") {
-        setRoutingScrapRates((prev) => ({ ...prev, [code]: 10 }));
+        setRoutingScrapRates((prev) => ({ ...prev, [code]: code.startsWith("CK") ? 5 : 10 }));
       }
       if (typeof routingLeadTimes[code] !== "number") {
         setRoutingLeadTimes((prev) => ({ ...prev, [code]: 3 }));
@@ -585,7 +585,7 @@ export default function ProductsPage() {
               <div className="flex items-center gap-1 flex-wrap">
                 {product.routing.map((step, sIdx) => {
                   const isKtp = step.toUpperCase() === "KTP";
-                  const scrapPct = product.routingScrapRates?.[step] ?? 10;
+                  const scrapPct = product.routingScrapRates?.[step] ?? (step.startsWith("CK") ? 5 : 10);
                   const leadDays = product.routingLeadTimes?.[step] ?? 3;
                   return (
                     <React.Fragment key={`${product.sku}-${step}-${sIdx}`}>
@@ -992,7 +992,7 @@ export default function ProductsPage() {
                                     min="0"
                                     max="100"
                                     step="1"
-                                    value={routingScrapRates[stepCode] ?? 10}
+                                    value={routingScrapRates[stepCode] ?? (stepCode.startsWith("CK") ? 5 : 10)}
                                     onChange={(e) => {
                                       const val = Math.max(0, Math.min(100, parseFloat(e.target.value) || 0));
                                       setRoutingScrapRates((prev) => ({ ...prev, [stepCode]: val }));

@@ -255,6 +255,25 @@ export async function declareOpeningStock(
   if (upsertErr) {
     throw new Error(`Lỗi khai báo tồn đầu kỳ cho ${wcCode}-${sku}: ${upsertErr.message}`);
   }
+
+  // Bổ sung ghi log lịch sử giao dịch để người dùng có thể xem lại trong Lịch sử (Fix Bug 5)
+  // Lưu ý: getXNTReport sẽ tự động lọc loại giao dịch này để không cộng gộp kép (chỉ hiển thị)
+  const { error: logErr } = await supabaseAdmin
+    .from("inventory_transactions")
+    .insert({
+      transaction_type: "ADJUST_OPENING_STOCK",
+      transaction_date: snapshotDate,
+      product_id: productId,
+      to_workshop_id: workshopId,
+      qty_tp_ok: tonThanhPham,
+      qty_ng: tonPhoi, // Mượn trường qty_ng để lưu tạm tồn phôi trong hiển thị lịch sử
+      created_by: userId,
+      note: `Khai báo/Điều chỉnh tồn đầu kỳ: ${tonPhoi} Phôi, ${tonThanhPham} TP`,
+    });
+    
+  if (logErr) {
+    console.error(`Không thể lưu lịch sử khai báo tồn đầu kỳ cho ${wcCode}-${sku}: ${logErr.message}`);
+  }
 }
 
 /**

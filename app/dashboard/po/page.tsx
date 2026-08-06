@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useRef } from "react";
+import { useState, useMemo, useRef, useEffect, Suspense } from "react";
 import useSWR from "swr";
 import * as XLSX from "xlsx";
 import {
@@ -19,10 +19,13 @@ import {
   Trash2,
   Download,
   Layers,
+  Truck,
+  Workflow,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import AccordionList from "@/components/AccordionList";
 import DataTable, { ColumnDef } from "@/components/DataTable";
+import POPipelineMatrix from "@/components/POPipelineMatrix";
 import { PO, POStatus } from "@/lib/po-wo-engine";
 import { Product } from "@/lib/types";
 import { LABELS } from "@/lib/labels";
@@ -99,8 +102,20 @@ interface ParsedPORow {
   isNewSku: boolean;
 }
 
-export default function POPage() {
+function POPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const [viewMode, setViewMode] = useState<"list" | "pipeline">("list");
+
+  useEffect(() => {
+    const view = searchParams.get("view");
+    const poId = searchParams.get("poId");
+    if (view === "pipeline" || poId) {
+      setViewMode("pipeline");
+    }
+  }, [searchParams]);
+
   const { data: posData, mutate: mutatePOs } = useSWR<PO[]>("/api/po", fetcher);
   const { data: productsData, mutate: mutateProducts } = useSWR<Product[]>("/api/products", fetcher);
 
@@ -671,98 +686,164 @@ export default function POPage() {
 
   return (
     <div className="space-y-6">
-      {/* Top Header & Actions Toolbar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded bg-canvas border border-border">
-        <div className="flex flex-wrap items-center gap-3">
-          {/* Search Input */}
-          <div className="relative flex items-center">
-            <Search className="w-4 h-4 absolute left-2.5 text-txt-secondary" />
-            <input
-              type="text"
-              placeholder="Tìm kiếm PO, Khách hàng, SKU..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-8 pr-3 py-1.5 text-xs bg-subtle border border-border rounded text-txt-primary focus:outline-none focus:border-accent w-60 sm:w-72"
-            />
+      {/* Top Header & View Mode Switcher */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-border pb-4">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-accent/10 text-accent">
+            <FileText className="w-5 h-5" />
           </div>
-
-          {/* Status Filter */}
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-subtle border border-border text-xs text-txt-secondary">
-            <Filter className="w-3.5 h-3.5" />
-            <select
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-              className="bg-transparent font-medium text-txt-primary focus:outline-none cursor-pointer"
-            >
-              <option value="ALL">Tất cả trạng thái</option>
-              <option value="NEW">NEW (Mới tạo)</option>
-              <option value="IN_PRODUCTION">IN_PRODUCTION (Đang sản xuất)</option>
-              <option value="PARTIALLY_SHIPPED">PARTIALLY_SHIPPED (Đã xuất 1 phần)</option>
-              <option value="COMPLETED">COMPLETED (Hoàn thành)</option>
-            </select>
+          <div>
+            <h1 className="text-lg font-bold text-txt-primary">Quản Lý Đơn Hàng & Tiến Độ PO</h1>
+            <p className="text-xs text-txt-secondary mt-0.5">
+              Theo dõi đơn đặt hàng của khách hàng và đánh giá mức độ rủi ro tiến độ dòng chảy xưởng.
+            </p>
           </div>
         </div>
 
-        {/* Action Buttons Toolbar - Minimalist Icon-only Buttons (Single Line) */}
-        <div className="flex items-center gap-1.5 shrink-0 flex-nowrap">
-          {selectedPoKeys.size > 0 && (
-            <span className="text-[11px] font-semibold text-accent font-mono bg-accent/10 px-2 py-1 rounded border border-accent/20 shrink-0">
-              Đã chọn {selectedPoKeys.size}
-            </span>
-          )}
-
-          {/* 1. Xem Tiến Độ PO */}
+        {/* View Mode Switcher */}
+        <div className="flex items-center gap-1.5 p-1 bg-subtle border border-border rounded-lg">
           <button
-            type="button"
-            onClick={() => {
-              if (selectedPoKeys.size !== 1) return;
-              const selectedPoId = Array.from(selectedPoKeys)[0];
-              router.push(`/dashboard/pipeline?poId=${encodeURIComponent(selectedPoId)}`);
-            }}
-            disabled={selectedPoKeys.size !== 1}
-            className="p-2 rounded bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-            title="Xem tiến độ PO Pipeline (Chỉ chọn 1 PO)"
+            onClick={() => setViewMode("list")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded text-xs font-semibold transition-colors ${
+              viewMode === "list"
+                ? "bg-canvas text-accent shadow-sm border border-border"
+                : "text-txt-secondary hover:text-txt-primary"
+            }`}
           >
-            <ChevronRight className="w-4 h-4 text-blue-600" />
+            <FileText className="w-4 h-4" />
+            <span>Danh Sách Đơn Hàng PO</span>
+            {pos.length > 0 && (
+              <span className="px-1.5 py-0.2 bg-subtle text-txt-secondary rounded-full text-[10px] font-bold">
+                {pos.length}
+              </span>
+            )}
           </button>
 
-          {/* 2. Sửa PO */}
           <button
-            type="button"
-            onClick={() => {
-              if (selectedPoKeys.size !== 1) return;
-              const selectedPoId = Array.from(selectedPoKeys)[0];
-              const poToEdit = pos.find((p) => (p.poLineId || p.poId) === selectedPoId);
-              if (poToEdit) openEditModal(poToEdit);
-            }}
-            disabled={selectedPoKeys.size !== 1}
-            className="p-2 rounded bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-            title="Chỉnh sửa thông tin PO đã chọn (Chỉ chọn 1 PO)"
+            onClick={() => setViewMode("pipeline")}
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded text-xs font-semibold transition-colors ${
+              viewMode === "pipeline"
+                ? "bg-canvas text-accent shadow-sm border border-border"
+                : "text-txt-secondary hover:text-txt-primary"
+            }`}
           >
-            <Edit2 className="w-4 h-4 text-amber-600" />
+            <Workflow className="w-4 h-4" />
+            <span>Ma Trận Tiến Độ (Pipeline)</span>
           </button>
+        </div>
+      </div>
 
-          {/* 3. Xóa PO */}
-          <button
-            type="button"
-            onClick={() => {
-              if (selectedPoKeys.size === 0) return;
-              setBulkDeleteResult(null);
-              setIsBulkDeleteModalOpen(true);
-            }}
-            disabled={selectedPoKeys.size === 0}
-            className="p-2 rounded bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
-            title={selectedPoKeys.size > 0 ? `Xóa ${selectedPoKeys.size} PO đã chọn` : "Xóa PO đã chọn"}
-          >
-            <Trash2 className="w-4 h-4 text-rose-600" />
-          </button>
+      {viewMode === "pipeline" ? (
+        <POPipelineMatrix initialPoId={searchParams.get("poId") || undefined} />
+      ) : (
+        <>
+          {/* Top Header & Actions Toolbar */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 rounded bg-canvas border border-border">
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Search Input */}
+              <div className="relative flex items-center">
+                <Search className="w-4 h-4 absolute left-2.5 text-txt-secondary" />
+                <input
+                  type="text"
+                  placeholder="Tìm kiếm PO, Khách hàng, SKU..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="pl-8 pr-3 py-1.5 text-xs bg-subtle border border-border rounded text-txt-primary focus:outline-none focus:border-accent w-60 sm:w-72"
+                />
+              </div>
 
-          <div className="h-4 w-px bg-border mx-0.5 shrink-0" />
+              {/* Status Filter */}
+              <div className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-subtle border border-border text-xs text-txt-secondary">
+                <Filter className="w-3.5 h-3.5" />
+                <select
+                  value={selectedStatus}
+                  onChange={(e) => setSelectedStatus(e.target.value)}
+                  className="bg-transparent font-medium text-txt-primary focus:outline-none cursor-pointer"
+                >
+                  <option value="ALL">Tất cả trạng thái</option>
+                  <option value="NEW">NEW (Mới tạo)</option>
+                  <option value="IN_PRODUCTION">IN_PRODUCTION (Đang sản xuất)</option>
+                  <option value="COMPLETED">COMPLETED (Hoàn thành)</option>
+                </select>
+              </div>
+            </div>
 
-          {/* 4. Xuất Excel PO */}
-          <button
-            type="button"
-            onClick={handleExportExcel}
+            {/* Action Buttons Toolbar - Minimalist Icon-only Buttons (Single Line) */}
+            <div className="flex items-center gap-1.5 shrink-0 flex-nowrap">
+              {selectedPoKeys.size > 0 && (
+                <span className="text-[11px] font-semibold text-accent font-mono bg-accent/10 px-2 py-1 rounded border border-accent/20 shrink-0">
+                  Đã chọn {selectedPoKeys.size}
+                </span>
+              )}
+
+              {/* 1. Lập Thông Báo Xuất Hàng (Chuyển sang trang Xuất Hàng) */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedPoKeys.size === 0) return;
+                  const ids = Array.from(selectedPoKeys).join(",");
+                  router.push(`/dashboard/shipment?poLineIds=${encodeURIComponent(ids)}`);
+                }}
+                disabled={selectedPoKeys.size === 0}
+                className="p-2 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                title={selectedPoKeys.size > 0 ? `Lập Thông Báo Giao Hàng cho ${selectedPoKeys.size} PO đã chọn` : "Lập Thông Báo Giao Hàng"}
+              >
+                <Truck className="w-4 h-4 text-emerald-600" />
+              </button>
+
+              {/* 2. Xem Tiến Độ PO */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedPoKeys.size !== 1) return;
+                  const selectedPoId = Array.from(selectedPoKeys)[0];
+                  setViewMode("pipeline");
+                  router.push(`/dashboard/po?view=pipeline&poId=${encodeURIComponent(selectedPoId)}`);
+                }}
+                disabled={selectedPoKeys.size !== 1}
+                className="p-2 rounded bg-blue-50 border border-blue-200 text-blue-700 hover:bg-blue-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                title="Xem tiến độ PO Pipeline (Chỉ chọn 1 PO)"
+              >
+                <Workflow className="w-4 h-4 text-blue-600" />
+              </button>
+
+              {/* 3. Sửa PO */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedPoKeys.size !== 1) return;
+                  const selectedPoId = Array.from(selectedPoKeys)[0];
+                  const poToEdit = pos.find((p) => (p.poLineId || p.poId) === selectedPoId);
+                  if (poToEdit) openEditModal(poToEdit);
+                }}
+                disabled={selectedPoKeys.size !== 1}
+                className="p-2 rounded bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                title="Chỉnh sửa thông tin PO đã chọn (Chỉ chọn 1 PO)"
+              >
+                <Edit2 className="w-4 h-4 text-amber-600" />
+              </button>
+
+              {/* 4. Xóa PO */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedPoKeys.size === 0) return;
+                  setBulkDeleteResult(null);
+                  setIsBulkDeleteModalOpen(true);
+                }}
+                disabled={selectedPoKeys.size === 0}
+                className="p-2 rounded bg-rose-50 border border-rose-200 text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                title={selectedPoKeys.size > 0 ? `Xóa ${selectedPoKeys.size} PO đã chọn` : "Xóa PO đã chọn"}
+              >
+                <Trash2 className="w-4 h-4 text-rose-600" />
+              </button>
+
+              <div className="h-4 w-px bg-border mx-0.5 shrink-0" />
+
+              {/* 5. Xuất Excel PO */}
+              <button
+                type="button"
+                onClick={handleExportExcel}
             className="p-2 rounded bg-subtle border border-border hover:bg-border text-txt-primary transition-colors shrink-0"
             title="Xuất mảng PO đang hiển thị ra file Excel"
           >
@@ -1230,6 +1311,16 @@ export default function POPage() {
           </div>
         </div>
       )}
+        </>
+      )}
     </div>
+  );
+}
+
+export default function POPage() {
+  return (
+    <Suspense fallback={<div className="p-6 text-xs text-txt-secondary">Đang tải trang Đơn hàng PO...</div>}>
+      <POPageContent />
+    </Suspense>
   );
 }

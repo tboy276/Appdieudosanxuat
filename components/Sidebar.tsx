@@ -33,12 +33,10 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { label: "Xuất Nhập Tồn theo Xưởng", href: "/dashboard/xnt", icon: BarChart3 },
-  { label: "Tiến Độ theo PO", href: "/dashboard/pipeline", icon: Workflow },
-  { label: "Danh Mục Part No.", href: "/dashboard/products", icon: Package },
-  { label: "Đơn Hàng PO", href: "/dashboard/po", icon: FileText },
+  { label: "Đơn Hàng & Tiến Độ PO", href: "/dashboard/po", icon: FileText },
   { label: "Lệnh Sản Xuất WO", href: "/dashboard/wo", icon: Layers },
-  { label: "Sản Xuất & Chuyển Phôi", href: "/dashboard/production", icon: ArrowLeftRight },
-  { label: "Xuất Hàng", href: "/dashboard/shipment", icon: Truck },
+  { label: "Thông Báo & Xuất Hàng", href: "/dashboard/shipment", icon: Truck },
+  { label: "Danh Mục Part No.", href: "/dashboard/products", icon: Package },
   { label: "Lịch Sử Giao Dịch (Admin)", href: "/dashboard/history", icon: History, roles: ["ADMIN"] },
   { label: "Quản Lý Người Dùng", href: "/dashboard/users", icon: Users, roles: ["ADMIN"] },
 ];

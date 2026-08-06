@@ -16,7 +16,9 @@ import {
   X,
   CheckCircle2,
   ArrowUpDown,
+  Download,
 } from "lucide-react";
+import * as XLSX from "xlsx";
 
 import { WO } from "@/lib/po-wo-engine";
 import { Product } from "@/lib/types";
@@ -31,6 +33,9 @@ interface StockBreakdown {
 interface XNTItem {
   wcCode: string;
   sku: string;
+  productNameVi?: string;
+  customerNames?: string[];
+  customerName?: string;
   opening: StockBreakdown;
   nhap: StockBreakdown;
   xuat: StockBreakdown;
@@ -418,7 +423,7 @@ export default function XNTDashboardPage() {
   // Column Definitions for Shared DataTable
   const xntGroupHeaders: ColumnGroupDef[] = useMemo(
     () => [
-      { title: "Thực Thể", colSpan: 2 },
+      { title: "Thực Thể", colSpan: 4 },
       { title: "1. KHU VỰC PHÔI", colSpan: 4, headerClassName: "bg-blue-50/70 text-blue-900 font-bold" },
       { title: "2. KHU VỰC THÀNH PHẨM", colSpan: 4, headerClassName: "bg-emerald-50/70 text-emerald-900 font-bold" },
       { title: "3. NHU CẦU WO TẠI XƯỞNG", colSpan: 2, headerClassName: "text-amber-900 bg-amber-50/70 font-bold" },
@@ -452,7 +457,27 @@ export default function XNTDashboardPage() {
         key: "sku",
         header: "SKU",
         sortable: true,
-        render: (item) => <span className="font-mono text-txt-secondary">{item.sku}</span>,
+        render: (item) => <span className="font-mono font-medium text-txt-primary">{item.sku}</span>,
+      },
+      {
+        key: "productNameVi",
+        header: "Tên Sản Phẩm",
+        sortable: true,
+        render: (item) => (
+          <span className="text-txt-primary truncate max-w-[180px] block" title={item.productNameVi || "—"}>
+            {item.productNameVi || "—"}
+          </span>
+        ),
+      },
+      {
+        key: "customerName",
+        header: "Khách Hàng",
+        sortable: true,
+        render: (item) => (
+          <span className="text-txt-secondary truncate max-w-[150px] block" title={item.customerName || (item.customerNames || []).join(", ") || "—"}>
+            {item.customerName || (item.customerNames || []).join(", ") || "—"}
+          </span>
+        ),
       },
       // 1. PHÔI (not applicable for KTP)
       {
@@ -610,6 +635,29 @@ export default function XNTDashboardPage() {
     [lowStockThreshold, wosBySkuMap]
   );
 
+  const handleExportExcel = () => {
+    if (reportItems.length === 0) return;
+    const excelRows = reportItems.map((item, idx) => ({
+      "STT": idx + 1,
+      "Xưởng": item.wcCode,
+      "Mã SKU": item.sku,
+      "Tên Sản Phẩm": item.productNameVi || "",
+      "Khách Hàng": item.customerName || (item.customerNames || []).join(", "),
+      "Tồn Đầu Phôi": item.wcCode === "KTP" ? 0 : item.opening.tonPhoi,
+      "Nhập Phôi": item.wcCode === "KTP" ? 0 : item.nhap.tonPhoi,
+      "Xuất Phôi": item.wcCode === "KTP" ? 0 : item.xuat.tonPhoi,
+      "Tồn Cuối Phôi": item.wcCode === "KTP" ? 0 : item.closing.tonPhoi,
+      "Tồn Đầu TP": item.opening.tonThanhPham,
+      "Nhập TP": item.nhap.tonThanhPham,
+      "Xuất TP": item.xuat.tonThanhPham,
+      "Tồn Cuối TP": item.closing.tonThanhPham,
+    }));
+    const worksheet = XLSX.utils.json_to_sheet(excelRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "XNT_Realtime");
+    XLSX.writeFile(workbook, `Can_Bang_XNT_${selectedDate}.xlsx`);
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Summary Metrics Bar */}
@@ -719,6 +767,15 @@ export default function XNTDashboardPage() {
 
           {/* Minimalist Icon Action Buttons (Right-Aligned) */}
           <div className="flex items-center gap-1.5 border-l border-border pl-3">
+            <button
+              onClick={handleExportExcel}
+              disabled={reportItems.length === 0}
+              className="p-2 rounded bg-subtle border border-border hover:bg-border text-txt-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              title="Xuất bảng Cân Bằng XNT ra file Excel"
+            >
+              <Download className="w-4 h-4 text-blue-600" />
+            </button>
+
             <button
               onClick={handleTopInputClick}
               disabled={selectedKeys.size === 0}

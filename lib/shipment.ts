@@ -101,7 +101,7 @@ export async function getShippableItems(filters?: {
 
   for (const po of filteredPos) {
     const ktpStock = stockBatch.get(`KTP:${po.sku}`) || { tonPhoi: 0, tonThanhPham: 0 };
-    const ktpAvailableQty = ktpStock.tonPhoi + ktpStock.tonThanhPham;
+    const ktpAvailableQty = ktpStock.tonThanhPham;
     const remainingOrderQty = Math.max(0, po.qty - (po.shippedQty || 0));
 
     if (remainingOrderQty > 0 && ktpAvailableQty > 0) {
@@ -181,35 +181,16 @@ export async function createShipment(
     throw new Error("Không thể xác định Khách Hàng cho đơn xuất này.");
   }
 
+  // Find KTP workshop ID for inventory transaction recording
+  const { data: ktpWs } = await supabaseAdmin
+    .from("workshops")
+    .select("id")
+    .or("is_ktp.eq.true,code.ilike.KTP")
+    .limit(1)
+    .maybeSingle();
+  const ktpWorkshopId = ktpWs?.id || null;
 
-  // Try RPC create_shipment first
-  try {
-    const { data: rpcShipmentId, error: rpcErr } = await supabaseAdmin.rpc("create_shipment", {
-      p_customer_id: validCustomerId,
-      p_actor_id: actorUserId,
-      p_note: note,
-      p_items: items.map((i) => ({
-        po_line_id: i.poLineId,
-        product_id: i.productId,
-        shipped_qty: i.shippedQty,
-      })),
-    });
-
-    if (!rpcErr && rpcShipmentId) {
-      const { data: shipRow } = await supabaseAdmin
-        .from("shipments")
-        .select("shipment_code")
-        .eq("id", rpcShipmentId)
-        .single();
-
-      return {
-        shipmentId: rpcShipmentId,
-        shipmentNumber: shipRow?.shipment_code || rpcShipmentId,
-      };
-    }
-  } catch (rpcEx) {}
-
-  // TS Engine Fallback (Atomic Manual Transaction Rollback)
+  // TS Engine Transaction Execution
   const shipmentCode = `SHIP-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
   const today = new Date().toISOString().split("T")[0];
 
@@ -231,12 +212,13 @@ export async function createShipment(
 
   const createdShipmentId = shipmentHeader.id;
   const insertedItemIds: string[] = [];
+  const insertedTxIds: string[] = [];
 
   try {
     for (const item of items) {
       const { data: lineRow } = await supabaseAdmin
         .from("po_lines")
-        .select("order_qty, po_id")
+        .select("order_qty, po_id, product_id")
         .eq("id", item.poLineId)
         .single();
 
@@ -273,7 +255,30 @@ export async function createShipment(
 
       insertedItemIds.push(newItem.id);
 
-      // Update PO Status
+      // Record SHIPMENT inventory transaction to deduct tonThanhPham from KTP
+      const resolvedProdId = item.productId || lineRow.product_id;
+      if (resolvedProdId && ktpWorkshopId) {
+        const { data: newTx, error: txErr } = await supabaseAdmin
+          .from("inventory_transactions")
+          .insert({
+            transaction_type: "SHIPMENT",
+            transaction_date: today,
+            product_id: resolvedProdId,
+            from_workshop_id: ktpWorkshopId,
+            qty_tp_ok: item.shippedQty,
+            qty_ng: 0,
+            created_by: actorUserId,
+            note: `Xuất giao khách theo phiếu ${shipmentHeader.shipment_code}${note ? `: ${note}` : ""}`,
+          })
+          .select("id")
+          .maybeSingle();
+
+        if (newTx) {
+          insertedTxIds.push(newTx.id);
+        }
+      }
+
+      // Update PO Status (strictly IN_PRODUCTION or COMPLETED to satisfy DB check constraint)
       const { data: allPoLines } = await supabaseAdmin
         .from("po_lines")
         .select("id, order_qty")
@@ -292,10 +297,7 @@ export async function createShipment(
       let poStatus = "IN_PRODUCTION";
       if (totalPoShipped >= totalPoOrder) {
         poStatus = "COMPLETED";
-      } else if (totalPoShipped > 0) {
-        poStatus = "PARTIALLY_SHIPPED";
       }
-
 
       await supabaseAdmin
         .from("purchase_orders")
@@ -303,6 +305,9 @@ export async function createShipment(
         .eq("id", lineRow.po_id);
     }
   } catch (err: any) {
+    if (insertedTxIds.length > 0) {
+      await supabaseAdmin.from("inventory_transactions").delete().in("id", insertedTxIds);
+    }
     if (insertedItemIds.length > 0) {
       await supabaseAdmin.from("shipment_items").delete().in("id", insertedItemIds);
     }

@@ -10,6 +10,9 @@ export interface StockBreakdown {
 export interface XNTReportItem {
   wcCode: string;
   sku: string;
+  productNameVi?: string;
+  customerNames?: string[];
+  customerName?: string;
   opening: StockBreakdown;
   nhap: StockBreakdown;
   xuat: StockBreakdown;
@@ -336,12 +339,19 @@ export async function getStockState(wcCode: string, sku: string): Promise<{ tonP
       tonThanhPham += netOk;
     } else if (t.transaction_type === "TRANSFER") {
       if (t.from_workshop_id === workshopId) {
-        // Xuất: consume from source
-        tonPhoi = Math.max(0, tonPhoi - netOk);
+        // Xuất chuyển: luôn trừ Thành Phẩm đã hoàn thành của xưởng nguồn (kể cả xưởng đầu chuỗi)
         tonThanhPham = Math.max(0, tonThanhPham - netOk);
       } else if (t.to_workshop_id === workshopId) {
-        // Nhập: add to destination as phoi (intermediate)
-        tonPhoi += netOk;
+        // Nhập chuyển: nếu là KTP -> nhận vào Tồn Thành Phẩm; nếu là xưởng trung gian -> nhận vào Tồn Phôi
+        if (wcCode.toUpperCase() === "KTP") {
+          tonThanhPham += netOk;
+        } else {
+          tonPhoi += netOk;
+        }
+      }
+    } else if (t.transaction_type === "SHIPMENT") {
+      if (t.from_workshop_id === workshopId) {
+        tonThanhPham = Math.max(0, tonThanhPham - netOk);
       }
     }
   }
@@ -404,12 +414,18 @@ export async function getStockStatesBatch(
   const uniqueSkus = [...new Set(pairs.map((p) => p.sku))];
 
   const [wsRes, prodRes] = await Promise.all([
-    supabaseAdmin.from("workshops").select("id, code").in("code", uniqueWcs),
+    supabaseAdmin.from("workshops").select("id, code, is_ktp").in("code", uniqueWcs),
     supabaseAdmin.from("products").select("id, part_no").in("part_no", uniqueSkus),
   ]);
 
   const wsMap = new Map<string, string>(); // code -> id
-  for (const w of wsRes.data || []) wsMap.set(w.code, w.id);
+  const ktpWsIds = new Set<string>();
+  for (const w of wsRes.data || []) {
+    wsMap.set(w.code, w.id);
+    if (w.is_ktp || w.code.toUpperCase() === "KTP") {
+      ktpWsIds.add(w.id);
+    }
+  }
 
   const prodMap = new Map<string, string>(); // part_no -> id
   for (const p of prodRes.data || []) prodMap.set(p.part_no, p.id);
@@ -509,10 +525,19 @@ export async function getStockStatesBatch(
         tonThanhPham += netOk;
       } else if (t.transaction_type === "TRANSFER") {
         if (t.from_workshop_id === wsId) {
-          tonPhoi = Math.max(0, tonPhoi - netOk);
+          // Xuất chuyển: luôn trừ Thành Phẩm đã hoàn thành của xưởng nguồn
           tonThanhPham = Math.max(0, tonThanhPham - netOk);
         } else if (t.to_workshop_id === wsId) {
-          tonPhoi += netOk;
+          // Nhập chuyển: nếu là KTP -> nhận vào Tồn Thành Phẩm; nếu là xưởng trung gian -> nhận vào Tồn Phôi
+          if (ktpWsIds.has(wsId) || wcCode.toUpperCase() === "KTP") {
+            tonThanhPham += netOk;
+          } else {
+            tonPhoi += netOk;
+          }
+        }
+      } else if (t.transaction_type === "SHIPMENT") {
+        if (t.from_workshop_id === wsId) {
+          tonThanhPham = Math.max(0, tonThanhPham - netOk);
         }
       }
     }
@@ -815,6 +840,10 @@ export async function recordTransfer(
     throw new Error("Sản lượng xuất chuyển phải lớn hơn 0.");
   }
 
+  if (fromCode.trim().toUpperCase() === "KTP") {
+    throw new Error("Không được phép xuất chuyển kho (TRANSFER) từ Kho Thành Phẩm (KTP). Hàng tại KTP chỉ được xuất qua phiếu Xuất Hàng (SHIPMENT).");
+  }
+
   const fromWorkshopId = await getWorkshopIdByCode(fromCode);
   const toWorkshopId = await getWorkshopIdByCode(toCode);
   const productId = await getProductIdBySku(sku);
@@ -969,6 +998,11 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
       id,
       part_no,
       name_vi,
+      product_customers (
+        customers (
+          name
+        )
+      ),
       product_routings (
         step_order,
         workshops (
@@ -1018,6 +1052,17 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
   const prodMap = new Map(products.map((p) => [p.id, p]));
   const reportMap = new Map<string, XNTReportItem>();
 
+  const getProductCustInfo = (prod: any) => {
+    const custNames: string[] = (prod.product_customers || [])
+      .map((pc: any) => pc.customers?.name)
+      .filter(Boolean);
+    return {
+      productNameVi: prod.name_vi || "",
+      customerNames: custNames,
+      customerName: custNames.join(", "),
+    };
+  };
+
   // 1. Populate base grid from Product Routings (every routing step + implicit KTP)
   for (const prod of products) {
     const rawRoutings = (prod.product_routings || []).sort(
@@ -1033,6 +1078,8 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
       routingWsCodes.push("KTP");
     }
 
+    const { productNameVi, customerNames, customerName } = getProductCustInfo(prod);
+
     for (const wsCode of routingWsCodes) {
       const ws = wsByCode.get(wsCode) || (wsCode === "KTP" ? ktpWs : null);
       const code = ws ? ws.code : wsCode;
@@ -1040,6 +1087,9 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
       reportMap.set(key, {
         wcCode: code,
         sku: prod.part_no,
+        productNameVi,
+        customerNames,
+        customerName,
         opening: { tonPhoi: 0, tonThanhPham: 0 },
         nhap: { tonPhoi: 0, tonThanhPham: 0 },
         xuat: { tonPhoi: 0, tonThanhPham: 0 },
@@ -1055,9 +1105,13 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
       const code = wo.wc_code.toUpperCase();
       const key = `${code}:${prod.part_no}`;
       if (!reportMap.has(key)) {
+        const { productNameVi, customerNames, customerName } = getProductCustInfo(prod);
         reportMap.set(key, {
           wcCode: code,
           sku: prod.part_no,
+          productNameVi,
+          customerNames,
+          customerName,
           opening: { tonPhoi: 0, tonThanhPham: 0 },
           nhap: { tonPhoi: 0, tonThanhPham: 0 },
           xuat: { tonPhoi: 0, tonThanhPham: 0 },
@@ -1100,9 +1154,13 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
       const itemKey = `${ws.code}:${prod.part_no}`;
       let item = reportMap.get(itemKey);
       if (!item) {
+        const { productNameVi, customerNames, customerName } = getProductCustInfo(prod);
         item = {
           wcCode: ws.code,
           sku: prod.part_no,
+          productNameVi,
+          customerNames,
+          customerName,
           opening: { tonPhoi: 0, tonThanhPham: 0 },
           nhap: { tonPhoi: 0, tonThanhPham: 0 },
           xuat: { tonPhoi: 0, tonThanhPham: 0 },
@@ -1124,6 +1182,8 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
     const prod = prodMap.get(t.product_id);
     if (!prod) continue;
 
+    const { productNameVi, customerNames, customerName } = getProductCustInfo(prod);
+
     if (t.transaction_type === "PRODUCTION_INPUT" && t.to_workshop_id) {
       const ws = wsMap.get(t.to_workshop_id);
       if (ws) {
@@ -1133,6 +1193,9 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
           item = {
             wcCode: ws.code,
             sku: prod.part_no,
+            productNameVi,
+            customerNames,
+            customerName,
             opening: { tonPhoi: 0, tonThanhPham: 0 },
             nhap: { tonPhoi: 0, tonThanhPham: 0 },
             xuat: { tonPhoi: 0, tonThanhPham: 0 },
@@ -1152,6 +1215,9 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
             item = {
               wcCode: fromWs.code,
               sku: prod.part_no,
+              productNameVi,
+              customerNames,
+              customerName,
               opening: { tonPhoi: 0, tonThanhPham: 0 },
               nhap: { tonPhoi: 0, tonThanhPham: 0 },
               xuat: { tonPhoi: 0, tonThanhPham: 0 },
@@ -1159,6 +1225,7 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
             };
             reportMap.set(itemKey, item);
           }
+          // Xuất chuyển: luôn trừ Thành Phẩm đã hoàn thành của xưởng nguồn
           item.xuat.tonThanhPham += netOk;
         }
       }
@@ -1171,6 +1238,9 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
             item = {
               wcCode: toWs.code,
               sku: prod.part_no,
+              productNameVi,
+              customerNames,
+              customerName,
               opening: { tonPhoi: 0, tonThanhPham: 0 },
               nhap: { tonPhoi: 0, tonThanhPham: 0 },
               xuat: { tonPhoi: 0, tonThanhPham: 0 },
@@ -1178,7 +1248,12 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
             };
             reportMap.set(itemKey, item);
           }
-          item.nhap.tonPhoi += netOk;
+          // Nếu đến KTP -> Nhập Thành Phẩm; nếu đến xưởng trung gian -> Nhập Phôi
+          if (toWs.is_ktp || toWs.code.toUpperCase() === "KTP") {
+            item.nhap.tonThanhPham += netOk;
+          } else {
+            item.nhap.tonPhoi += netOk;
+          }
         }
       }
     } else if (t.transaction_type === "SHIPMENT" && t.from_workshop_id) {
@@ -1190,6 +1265,9 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
           item = {
             wcCode: fromWs.code,
             sku: prod.part_no,
+            productNameVi,
+            customerNames,
+            customerName,
             opening: { tonPhoi: 0, tonThanhPham: 0 },
             nhap: { tonPhoi: 0, tonThanhPham: 0 },
             xuat: { tonPhoi: 0, tonThanhPham: 0 },

@@ -7,10 +7,18 @@ import {
   XNTReportItem,
   StockBreakdown,
   TransactionHistoryItem,
+  ProductionAllocationSummary,
+  ProductionAllocationItem,
 } from "./inventory-postgres";
 
 export { getXNTReport, getTransactionHistory };
-export type { XNTReportItem, StockBreakdown, TransactionHistoryItem };
+export type {
+  XNTReportItem,
+  StockBreakdown,
+  TransactionHistoryItem,
+  ProductionAllocationSummary,
+  ProductionAllocationItem,
+};
 
 export type TxType =
   | "PRODUCE_PHOI"
@@ -54,8 +62,8 @@ export async function inputProduction(
   woId?: string,
   customDate?: string,
   ngQty: number = 0
-): Promise<void> {
-  await recordProductionInput(
+): Promise<ProductionAllocationSummary> {
+  return await recordProductionInput(
     code,
     sku,
     actualQty,

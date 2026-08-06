@@ -29,19 +29,13 @@ export async function POST(req: NextRequest) {
       isFirstStep = product.routing[0] === wcCode;
     }
 
-    // Step 1: Physical Inventory Input (Throws if insufficient stock)
-    await inputProduction(wcCode, sku, qtyNum, user!.username, isFirstStep, woId, customDate, parsedNgQty);
-
-    // Step 2: WO Progress Update (Only executed if Step 1 succeeds)
-    let updatedWO = null;
-    if (woId) {
-      updatedWO = await recordWOProgress(woId, wcCode, qtyNum, user!.username);
-    }
+    // Step 1: Physical Inventory Input & Auto-allocation (Throws if insufficient stock)
+    const summary = await inputProduction(wcCode, sku, qtyNum, user!.username, isFirstStep, woId, customDate, parsedNgQty);
 
     return NextResponse.json({
       success: true,
-      message: "Báo cáo sản lượng thành công.",
-      wo: updatedWO,
+      message: summary.message || "Báo cáo sản lượng thành công.",
+      summary,
     });
   } catch (err) {
     return handleApiError(err, "Nhập báo cáo sản lượng thất bại.");

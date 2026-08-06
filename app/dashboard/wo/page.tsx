@@ -26,6 +26,7 @@ import {
   Factory,
   Pencil,
   SlidersHorizontal,
+  CheckSquare,
 } from "lucide-react";
 import DataTable, { ColumnDef } from "@/components/DataTable";
 import { WO, PO, computeBackwardWOPlannedQtys, computeBackwardWODeadlines } from "@/lib/po-wo-engine";
@@ -153,6 +154,11 @@ export default function WOPage() {
   const [editTargetQty, setEditTargetQty] = useState("");
   const [isSubmittingEditWo, setIsSubmittingEditWo] = useState(false);
   const [editWoError, setEditWoError] = useState("");
+
+  // Early Close WO Modal State
+  const [isEarlyCloseModalOpen, setIsEarlyCloseModalOpen] = useState(false);
+  const [earlyCloseTargetWo, setEarlyCloseTargetWo] = useState<WO | null>(null);
+  const [isClosingEarly, setIsClosingEarly] = useState(false);
 
   // Map of PO ID to customer name
   const poCustomerMap = useMemo(() => {
@@ -744,23 +750,31 @@ export default function WOPage() {
     }
   };
 
-  const handleCloseWO = async (woId: string) => {
+  const handleConfirmEarlyClose = async () => {
+    if (!earlyCloseTargetWo) return;
+    setIsClosingEarly(true);
     try {
-      const res = await fetch(`/api/wo/${woId}/close`, {
+      const res = await fetch(`/api/wo/${earlyCloseTargetWo.woId}/close`, {
         method: "POST",
       });
 
       const data = await res.json();
       if (!res.ok) {
         alert(data.error || "Đóng WO thất bại.");
+        setIsClosingEarly(false);
         return;
       }
 
-      setToastMessage(`Đã đóng thành công WO ${woId}. Trạng thái chuyển sang READY_TO_SHIP.`);
+      setToastMessage(`Đã đóng sớm thành công WO ${earlyCloseTargetWo.woId}. Trạng thái chuyển sang READY_TO_SHIP.`);
+      setIsEarlyCloseModalOpen(false);
+      setEarlyCloseTargetWo(null);
+      setSelectedWoKeys(new Set());
       mutateWOs();
       mutatePOs();
     } catch {
       alert("Đã xảy ra lỗi khi kết nối máy chủ.");
+    } finally {
+      setIsClosingEarly(false);
     }
   };
 
@@ -1080,6 +1094,25 @@ export default function WOPage() {
             <Trash2 className="w-4 h-4 text-rose-600" />
           </button>
 
+          {/* 3b. Đóng sớm / Hủy phần còn lại (Chỉ khi chọn 1 WO) */}
+          <button
+            type="button"
+            onClick={() => {
+              if (selectedWoKeys.size !== 1) return;
+              const singleWoId = Array.from(selectedWoKeys)[0];
+              const wo = wos.find((w) => w.woId === singleWoId);
+              if (wo) {
+                setEarlyCloseTargetWo(wo);
+                setIsEarlyCloseModalOpen(true);
+              }
+            }}
+            disabled={selectedWoKeys.size !== 1}
+            className="p-2 rounded bg-purple-50 border border-purple-200 text-purple-700 hover:bg-purple-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+            title="Đóng sớm Lệnh WO / Hủy phần nhu cầu còn lại (Chỉ chọn 1 WO)"
+          >
+            <CheckSquare className="w-4 h-4 text-purple-600" />
+          </button>
+
           <div className="h-4 w-px bg-border mx-0.5 shrink-0" />
 
           {/* 4. Tùy chỉnh cột hiển thị */}
@@ -1395,6 +1428,82 @@ export default function WOPage() {
                   {isBulkDeleting ? "Đang xóa..." : `Xác Nhận Xóa ${selectedWoKeys.size} WO`}
                 </button>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Early Close WO Modal */}
+      {isEarlyCloseModalOpen && earlyCloseTargetWo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 overflow-y-auto">
+          <div className="bg-canvas border border-border rounded-lg shadow-xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div className="flex items-center gap-2">
+                <CheckSquare className="w-4 h-4 text-purple-600" />
+                <h3 className="text-sm font-bold text-txt-primary">Đóng Sớm Lệnh Sản Xuất WO</h3>
+              </div>
+              <button
+                onClick={() => setIsEarlyCloseModalOpen(false)}
+                className="text-txt-secondary hover:text-txt-primary p-1 rounded"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 rounded bg-subtle border border-border space-y-2 text-xs">
+              <div className="flex justify-between items-center">
+                <span className="text-txt-secondary">Mã Lệnh WO:</span>
+                <span className="font-mono font-bold text-txt-primary">{earlyCloseTargetWo.woId}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-txt-secondary">Xưởng / SKU:</span>
+                <span className="font-mono font-bold text-txt-primary">{earlyCloseTargetWo.wcCode} / {earlyCloseTargetWo.sku}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border text-center">
+                <div className="p-1.5 rounded bg-canvas border border-border">
+                  <p className="text-[10px] text-txt-secondary">Mục Tiêu</p>
+                  <p className="font-mono font-bold text-txt-primary mt-0.5">{earlyCloseTargetWo.targetQty} pcs</p>
+                </div>
+                <div className="p-1.5 rounded bg-canvas border border-border">
+                  <p className="text-[10px] text-txt-secondary">Đã Làm</p>
+                  <p className="font-mono font-bold text-emerald-600 mt-0.5">{earlyCloseTargetWo.shippedQty || 0} pcs</p>
+                </div>
+                <div className="p-1.5 rounded bg-canvas border border-border">
+                  <p className="text-[10px] text-txt-secondary">Còn Thiếu</p>
+                  <p className="font-mono font-bold text-rose-600 mt-0.5">
+                    {Math.max(0, (earlyCloseTargetWo.targetQty || 0) - (earlyCloseTargetWo.shippedQty || 0))} pcs
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3 rounded bg-purple-50 border border-purple-200 text-purple-900 text-xs space-y-1.5">
+              <p className="font-bold">⚠️ Lưu ý quan trọng:</p>
+              <p>
+                Chức năng này dùng để <strong>đóng sớm / hủy phần nhu cầu còn lại</strong> của Lệnh WO khi kế hoạch sản xuất thay đổi hoặc chấp nhận giao thiếu.
+              </p>
+              <p>
+                Sau khi đóng sớm, trạng thái WO sẽ chuyển sang <span className="font-mono font-bold text-purple-800">READY_TO_SHIP</span> và WO này sẽ <strong>không còn nhận thêm sản lượng</strong> tự động từ xưởng.
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+              <button
+                type="button"
+                onClick={() => setIsEarlyCloseModalOpen(false)}
+                disabled={isClosingEarly}
+                className="px-4 py-1.5 rounded bg-subtle border border-border text-txt-primary hover:bg-border text-xs font-medium"
+              >
+                Hủy
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmEarlyClose}
+                disabled={isClosingEarly}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded bg-purple-600 text-white font-semibold hover:bg-purple-700 text-xs disabled:opacity-50"
+              >
+                {isClosingEarly ? "Đang xử lý..." : "Xác Nhận Đóng Sớm WO"}
+              </button>
             </div>
           </div>
         </div>

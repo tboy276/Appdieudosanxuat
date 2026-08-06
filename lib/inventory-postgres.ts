@@ -548,8 +548,30 @@ export async function bulkDeclareOpeningStock(
   return { successCount, failedCount: errors.length, errors };
 }
 
+export interface ProductionAllocationItem {
+  woId: string | null;
+  woNumber?: string;
+  allocatedQty: number;
+  targetQty?: number;
+  completedQty?: number;
+  isCompleted?: boolean;
+  note?: string;
+}
+
+export interface ProductionAllocationSummary {
+  totalQtyOk: number;
+  totalQtyNg: number;
+  allocations: ProductionAllocationItem[];
+  excessQty: number;
+  message: string;
+}
+
 /**
  * 3. Record Production Input in Supabase PostgreSQL (inventory_transactions table)
+ * Supports:
+ * - Auto-allocation (Default): Allocates actualQty across open WOs ordered by (deadline ASC nulls last, created_at ASC).
+ *   Excess quantity beyond total open WOs is recorded with work_order_id = NULL without blocking.
+ * - Manual Override: If woId is explicitly provided, assigns actualQty directly to that WO.
  */
 export async function recordProductionInput(
   code: string,
@@ -560,9 +582,12 @@ export async function recordProductionInput(
   woId?: string,
   customDate?: string,
   ngQty: number = 0
-): Promise<void> {
-  if (actualQty <= 0) {
-    throw new Error("Sản lượng báo cáo phải lớn hơn 0.");
+): Promise<ProductionAllocationSummary> {
+  if (actualQty <= 0 && ngQty <= 0) {
+    throw new Error("Sản lượng báo cáo (TP đạt hoặc NG phế phẩm) phải lớn hơn 0.");
+  }
+  if (actualQty < 0) {
+    throw new Error("Sản lượng báo cáo không được âm.");
   }
   if (ngQty < 0) {
     throw new Error("Số lượng NG/Phế phẩm không được âm.");
@@ -574,27 +599,203 @@ export async function recordProductionInput(
   const txDate = customDate || getTodayVN();
   const validWoId = isUuid(woId) ? woId : null;
 
-  const { error } = await supabaseAdmin
-    .from("inventory_transactions")
-    .insert({
+  // CASE 1: Manual Override Mode (Explicit woId provided)
+  if (validWoId) {
+    const { error } = await supabaseAdmin
+      .from("inventory_transactions")
+      .insert({
+        transaction_type: "PRODUCTION_INPUT",
+        transaction_date: txDate,
+        product_id: productId,
+        work_order_id: validWoId,
+        to_workshop_id: workshopId,
+        qty_tp_ok: actualQty,
+        qty_ng: ngQty,
+        created_by: userId,
+        note: `Báo cáo sản lượng ${code} - ${sku} (Chỉ định WO)`,
+      });
+
+    if (error) {
+      throw new Error(`Lỗi ghi nhận sản lượng PostgreSQL: ${error.message}`);
+    }
+
+    await syncWOCompletedQty(validWoId);
+
+    const { data: woData } = await supabaseAdmin
+      .from("work_orders")
+      .select("wo_number, planned_qty, completed_qty, status")
+      .eq("id", validWoId)
+      .maybeSingle();
+
+    const isCompleted = (woData?.completed_qty || 0) >= (woData?.planned_qty || 0);
+
+    return {
+      totalQtyOk: actualQty,
+      totalQtyNg: ngQty,
+      allocations: [
+        {
+          woId: validWoId,
+          woNumber: woData?.wo_number || validWoId,
+          allocatedQty: actualQty,
+          targetQty: woData?.planned_qty,
+          completedQty: woData?.completed_qty,
+          isCompleted,
+        },
+      ],
+      excessQty: 0,
+      message: `Đã ghi nhận ${actualQty} pcs cho WO ${woData?.wo_number || validWoId}${isCompleted ? " (Đã hoàn thành)" : ""}.`,
+    };
+  }
+
+  // CASE 2: Auto-allocate Mode (Default)
+  // 1. Fetch all open WOs for (workshop_id, product_id)
+  const { data: openWos, error: fetchWoErr } = await supabaseAdmin
+    .from("work_orders")
+    .select("id, wo_number, planned_qty, completed_qty, deadline, created_at, status")
+    .eq("workshop_id", workshopId)
+    .eq("product_id", productId)
+    .in("status", ["PENDING", "IN_PROGRESS"]);
+
+  if (fetchWoErr) {
+    throw new Error(`Lỗi truy vấn Lệnh sản xuất để phân bổ: ${fetchWoErr.message}`);
+  }
+
+  // 2. Sort open WOs: deadline ASC (nulls last), then created_at ASC
+  const sortedWos = [...(openWos || [])].sort((a, b) => {
+    if (a.deadline && b.deadline) {
+      const cmp = a.deadline.localeCompare(b.deadline);
+      if (cmp !== 0) return cmp;
+    } else if (a.deadline && !b.deadline) {
+      return -1;
+    } else if (!a.deadline && b.deadline) {
+      return 1;
+    }
+    return (a.created_at || "").localeCompare(b.created_at || "");
+  });
+
+  let remainingOk = actualQty;
+  let remainingNg = ngQty;
+  const insertPayloads: any[] = [];
+  const allocations: ProductionAllocationItem[] = [];
+  const wosToSync: string[] = [];
+
+  // 3. Distribute actualQty across open WOs
+  for (const wo of sortedWos) {
+    if (remainingOk <= 0) break;
+
+    const planned = Number(wo.planned_qty || 0);
+    const completed = Number(wo.completed_qty || 0);
+    const needed = Math.max(0, planned - completed);
+
+    if (needed <= 0) continue;
+
+    const alloc = Math.min(remainingOk, needed);
+    if (alloc > 0) {
+      // Attach remaining NG to the first transaction created
+      const ngForThis = remainingNg;
+      remainingNg = 0;
+
+      insertPayloads.push({
+        transaction_type: "PRODUCTION_INPUT",
+        transaction_date: txDate,
+        product_id: productId,
+        work_order_id: wo.id,
+        to_workshop_id: workshopId,
+        qty_tp_ok: alloc,
+        qty_ng: ngForThis,
+        created_by: userId,
+        note: `Báo cáo sản lượng ${code} - ${sku} (Tự động phân bổ WO)`,
+      });
+
+      wosToSync.push(wo.id);
+
+      const newCompleted = completed + alloc;
+      const isDone = newCompleted >= planned;
+
+      allocations.push({
+        woId: wo.id,
+        woNumber: wo.wo_number || wo.id,
+        allocatedQty: alloc,
+        targetQty: planned,
+        completedQty: newCompleted,
+        isCompleted: isDone,
+      });
+
+      remainingOk -= alloc;
+    }
+  }
+
+  // 4. Excess Production Handling (remainingOk > 0 or pure NG report when actualQty === 0)
+  if (remainingOk > 0 || (actualQty === 0 && remainingNg > 0)) {
+    insertPayloads.push({
       transaction_type: "PRODUCTION_INPUT",
       transaction_date: txDate,
       product_id: productId,
-      work_order_id: validWoId,
+      work_order_id: null,
       to_workshop_id: workshopId,
-      qty_tp_ok: actualQty,
-      qty_ng: ngQty,
+      qty_tp_ok: remainingOk,
+      qty_ng: remainingNg,
       created_by: userId,
-      note: `Báo cáo sản lượng ${code} - ${sku}`,
+      note: `Báo cáo sản lượng ${code} - ${sku} (Sản xuất dôi dư ngoài WO)`,
     });
 
-  if (error) {
-    throw new Error(`Lỗi ghi nhận sản lượng PostgreSQL: ${error.message}`);
+    if (remainingOk > 0) {
+      allocations.push({
+        woId: null,
+        allocatedQty: remainingOk,
+        note: "Sản xuất dôi dư ngoài WO",
+      });
+    }
   }
 
-  if (validWoId) {
-    await syncWOCompletedQty(validWoId);
+  // 5. Bulk insert inventory transactions
+  if (insertPayloads.length > 0) {
+    const { error: insertErr } = await supabaseAdmin
+      .from("inventory_transactions")
+      .insert(insertPayloads);
+
+    if (insertErr) {
+      throw new Error(`Lỗi ghi nhận giao dịch sản lượng: ${insertErr.message}`);
+    }
   }
+
+  // 6. Sync WO completed_qty and status for all affected WOs
+  for (const woId of wosToSync) {
+    await syncWOCompletedQty(woId);
+  }
+
+  // 7. Format user summary message
+  const msgParts: string[] = [];
+  const completedWos = allocations.filter((a) => a.woId && a.isCompleted);
+  const partialWos = allocations.filter((a) => a.woId && !a.isCompleted);
+  const excessItem = allocations.find((a) => a.woId === null);
+
+  if (completedWos.length > 0) {
+    msgParts.push(
+      `Đã hoàn thành ${completedWos.map((w) => `${w.woNumber} (+${w.allocatedQty} pcs)`).join(", ")}`
+    );
+  }
+  if (partialWos.length > 0) {
+    msgParts.push(
+      `Phân bổ ${partialWos.map((w) => `${w.woNumber} (+${w.allocatedQty}/${w.targetQty} pcs)`).join(", ")}`
+    );
+  }
+  if (excessItem && excessItem.allocatedQty > 0) {
+    msgParts.push(`Dôi dư ngoài WO: +${excessItem.allocatedQty} pcs`);
+  }
+  if (msgParts.length === 0) {
+    msgParts.push(`Đã ghi nhận +${actualQty} pcs vào tồn kho`);
+  }
+
+  const message = msgParts.join("; ") + ".";
+
+  return {
+    totalQtyOk: actualQty,
+    totalQtyNg: ngQty,
+    allocations,
+    excessQty: remainingOk,
+    message,
+  };
 }
 
 /**
@@ -784,12 +985,13 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
     prodQuery = prodQuery.eq("part_no", filterSku.trim());
   }
 
-  // Fetch workshops, products with routing, opening stocks, and transactions in parallel
+  // Fetch workshops, products with routing, opening stocks, transactions, and work orders in parallel
   const [
     { data: workshops },
     { data: products },
     { data: openings },
-    { data: txs }
+    { data: txs },
+    { data: openWos }
   ] = await Promise.all([
     supabaseAdmin.from("workshops").select("id, code, name, is_ktp"),
     prodQuery,
@@ -801,7 +1003,10 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
       .from("inventory_transactions")
       .select("id, transaction_type, product_id, work_order_id, from_workshop_id, to_workshop_id, qty_tp_ok, qty_ng, note, transaction_date")
       .lte("transaction_date", targetDate)
-      .range(0, 9999)
+      .range(0, 9999),
+    supabaseAdmin
+      .from("work_orders")
+      .select("wc_code, product_id")
   ]);
 
   if (!workshops || workshops.length === 0 || !products || products.length === 0) return [];
@@ -840,6 +1045,25 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
         xuat: { tonPhoi: 0, tonThanhPham: 0 },
         closing: { tonPhoi: 0, tonThanhPham: 0 },
       });
+    }
+  }
+
+  // 1b. Also ensure any (wc_code, sku) from existing work_orders is present in base grid
+  for (const wo of openWos || []) {
+    const prod = prodMap.get(wo.product_id);
+    if (prod && wo.wc_code) {
+      const code = wo.wc_code.toUpperCase();
+      const key = `${code}:${prod.part_no}`;
+      if (!reportMap.has(key)) {
+        reportMap.set(key, {
+          wcCode: code,
+          sku: prod.part_no,
+          opening: { tonPhoi: 0, tonThanhPham: 0 },
+          nhap: { tonPhoi: 0, tonThanhPham: 0 },
+          xuat: { tonPhoi: 0, tonThanhPham: 0 },
+          closing: { tonPhoi: 0, tonThanhPham: 0 },
+        });
+      }
     }
   }
 

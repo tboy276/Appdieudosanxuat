@@ -309,8 +309,8 @@ export default function XNTDashboardPage() {
 
     const qtyNum = Number(inputQty);
     const ngNum = Math.max(0, Number(inputNgQty || 0));
-    if (!qtyNum || qtyNum <= 0) {
-      setInputError("Sản lượng báo cáo phải lớn hơn 0.");
+    if ((!qtyNum || qtyNum <= 0) && ngNum <= 0) {
+      setInputError("Sản lượng báo cáo (TP đạt hoặc NG phế phẩm) phải lớn hơn 0.");
       return;
     }
 
@@ -337,9 +337,8 @@ export default function XNTDashboardPage() {
         return;
       }
 
-      const ngMsg = ngNum > 0 ? ` (+${ngNum} pcs NG phế phẩm)` : "";
       setToastMessage(
-        `Báo cáo thành công +${qtyNum.toLocaleString()} pcs TP${ngMsg} cho xưởng ${inputModalItem.wcCode} (SKU: ${inputModalItem.sku}).`
+        data.message || `Đã ghi nhận +${qtyNum.toLocaleString()} pcs TP cho xưởng ${inputModalItem.wcCode} (SKU: ${inputModalItem.sku}).`
       );
       setInputModalItem(null);
       setSelectedKeys(new Set()); // Reset selection after successful action
@@ -379,7 +378,6 @@ export default function XNTDashboardPage() {
           toCode: transferToWc,
           sku: transferModalItem.sku,
           qty: qtyNum,
-          woId: transferWoId || undefined,
         }),
       });
 
@@ -867,22 +865,43 @@ export default function XNTDashboardPage() {
                 </p>
               </div>
 
-              <div className="space-y-1">
-                <label className="font-medium text-txt-secondary">Mã Lệnh Sản Xuất WO (Tùy chọn):</label>
-                <select
-                  value={inputWoId}
-                  onChange={(e) => setInputWoId(e.target.value)}
-                  className="w-full px-3 py-2 bg-subtle border border-border rounded text-txt-primary font-mono focus:outline-none"
-                >
-                  <option value="">-- Không liên kết WO --</option>
-                  {wos
-                    .filter((w) => w.sku === inputModalItem.sku && w.status !== "SHIPPED")
-                    .map((w) => (
-                      <option key={w.woId} value={w.woId}>
-                        {w.woId} (Mục tiêu: {w.targetQty} pcs)
-                      </option>
-                    ))}
-                </select>
+              <div className="space-y-1.5">
+                <label className="font-medium text-txt-secondary flex items-center justify-between">
+                  <span>Phân Bổ Lệnh Sản Xuất WO:</span>
+                  <span className="text-[10px] text-accent font-semibold">⚡ Tự động theo hạn giao</span>
+                </label>
+                {(() => {
+                  const pairWos = wos.filter(
+                    (w) =>
+                      w.sku === inputModalItem.sku &&
+                      w.wcCode === inputModalItem.wcCode &&
+                      w.status !== "SHIPPED" &&
+                      w.status !== "READY_TO_SHIP"
+                  );
+                  if (pairWos.length === 0) {
+                    return (
+                      <p className="p-2 rounded bg-subtle border border-border text-[11px] text-txt-secondary italic">
+                        Không có WO nào đang mở tại xưởng này. Sản lượng sẽ vào tồn kho dôi dư.
+                      </p>
+                    );
+                  }
+                  return (
+                    <div className="space-y-1.5">
+                      <select
+                        value={inputWoId}
+                        onChange={(e) => setInputWoId(e.target.value)}
+                        className="w-full px-3 py-2 bg-subtle border border-border rounded text-txt-primary font-mono focus:outline-none focus:border-accent"
+                      >
+                        <option value="">⚡ Tự động phân bổ theo hạn giao (Mặc định)</option>
+                        {pairWos.map((w) => (
+                          <option key={w.woId} value={w.woId}>
+                            Chỉ định: {w.woId} (Mục tiêu: {w.targetQty} pcs, Hạn: {w.deadline || "—"})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-border">
@@ -906,14 +925,14 @@ export default function XNTDashboardPage() {
         </div>
       )}
 
-      {/* Quick Transfer Modal */}
+      {/* Quick Transfer Modal (Physical Movement - Decoupled from WO) */}
       {transferModalItem && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
           <div className="bg-canvas border border-border rounded shadow-lg max-w-md w-full p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-border pb-3">
               <h3 className="text-sm font-bold text-txt-primary flex items-center gap-2">
                 <ArrowRight className="w-4 h-4 text-accent" />
-                <span>Xuất Chuyển Xưởng — Từ {transferModalItem.wcCode}</span>
+                <span>Xuất Chuyển Xưởng (Vật Lý) — Từ {transferModalItem.wcCode}</span>
               </h3>
               <button onClick={() => setTransferModalItem(null)} className="text-txt-secondary hover:text-txt-primary">
                 <X className="w-4 h-4" />
@@ -962,24 +981,6 @@ export default function XNTDashboardPage() {
                   onChange={(e) => setTransferQty(e.target.value)}
                   className="w-full px-3 py-2 bg-subtle border border-border rounded text-txt-primary font-mono focus:outline-none focus:border-accent"
                 />
-              </div>
-
-              <div className="space-y-1">
-                <label className="font-medium text-txt-secondary">Mã Lệnh Sản Xuất WO (Tùy chọn):</label>
-                <select
-                  value={transferWoId}
-                  onChange={(e) => setTransferWoId(e.target.value)}
-                  className="w-full px-3 py-2 bg-subtle border border-border rounded text-txt-primary font-mono focus:outline-none"
-                >
-                  <option value="">-- Không liên kết WO --</option>
-                  {wos
-                    .filter((w) => w.sku === transferModalItem.sku && w.status !== "SHIPPED")
-                    .map((w) => (
-                      <option key={w.woId} value={w.woId}>
-                        {w.woId} (Mục tiêu: {w.targetQty} pcs)
-                      </option>
-                    ))}
-                </select>
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-border">

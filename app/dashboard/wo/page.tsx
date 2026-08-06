@@ -1588,7 +1588,7 @@ export default function WOPage() {
               <DataTable<any>
                 data={filteredBulkPOs}
                 columns={bulkPoColumns}
-                getItemKey={(p) => p.poId}
+                getItemKey={(p) => p.poLineId || p.poId}
                 selectable={true}
                 selectedKeys={selectedPoKeysForBulk}
                 onSelectionChange={setSelectedPoKeysForBulk}

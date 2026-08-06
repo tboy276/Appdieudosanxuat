@@ -94,6 +94,10 @@ export interface WOStep {
 export interface WO {
   woId: string;
   poId: string;
+  poLineId?: string;
+  productId?: string;
+  workshopId?: string;
+  woNumber?: string;
   poNumber: string;
   sku: string;
   productNameVi: string;

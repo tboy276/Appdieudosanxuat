@@ -555,7 +555,59 @@ export async function createWOsForPO(
         await updatePO(po.poId, { status: "IN_PRODUCTION" });
       }
 
-      createdWos = (insertedRows || []).map((r) => ({ woId: r.id } as any));
+      const insertedIds = (insertedRows || []).map((r) => r.id);
+      const { data: woData } = await supabaseAdmin
+        .from("work_orders")
+        .select(`
+          id,
+          wo_number,
+          po_line_id,
+          product_id,
+          workshop_id,
+          step_order,
+          planned_qty,
+          completed_qty,
+          lead_time_days,
+          deadline,
+          status,
+          created_at,
+          updated_at,
+          workshops (
+            id,
+            code,
+            name
+          ),
+          products (
+            id,
+            part_no,
+            name_vi,
+            product_routings (
+              step_order,
+              workshops (
+                code
+              )
+            )
+          ),
+          po_lines (
+            id,
+            po_id,
+            order_qty,
+            purchase_orders (
+              id,
+              po_number,
+              requested_date,
+              status,
+              customers (
+                id,
+                name
+              )
+            )
+          )
+        `)
+        .in("id", insertedIds);
+
+      createdWos = (woData || []).map(mapDbRecordToWO);
+      createdWos.sort((a, b) => a.stepOrder - b.stepOrder);
     }
 
     return { createdWos, skippedCount };

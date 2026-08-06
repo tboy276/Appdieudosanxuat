@@ -6,6 +6,7 @@ describe("lib/inventory.ts - Opening Inventory & Stock State (Dual-State Model)"
   let workshopId: string;
   let productId101: string;
   let productIdPrefill: string;
+  let prefillSku: string;
 
   beforeAll(async () => {
     // Ensure D1 workshop exists (seed if needed)
@@ -20,9 +21,10 @@ describe("lib/inventory.ts - Opening Inventory & Stock State (Dual-State Model)"
       .single();
     productId101 = p1?.id;
 
+    prefillSku = "SKU-PREFILL-" + Date.now();
     const { data: p2 } = await supabaseAdmin
       .from("products")
-      .upsert({ part_no: "SKU-PREFILL-TEST", name_vi: "Test SKU-PREFILL-TEST", unit: "Cái" }, { onConflict: "part_no" })
+      .upsert({ part_no: prefillSku, name_vi: `Test ${prefillSku}`, unit: "Cái" }, { onConflict: "part_no" })
       .select("id")
       .single();
     productIdPrefill = p2?.id;
@@ -61,7 +63,7 @@ describe("lib/inventory.ts - Opening Inventory & Stock State (Dual-State Model)"
   }, 10000);
 
   it("should fetch latest opening stock snapshots per workcenter from PostgreSQL", async () => {
-    const sku = "SKU-PREFILL-TEST";
+    const sku = prefillSku;
 
     // Declare for D1 on 2026-07-25
     await declareOpeningStock("D1", sku, { tonPhoi: 0, tonThanhPham: 100 }, "admin", "2026-07-25");

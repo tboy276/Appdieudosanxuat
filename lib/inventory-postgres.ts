@@ -741,36 +741,109 @@ export async function reverseTransaction(
   };
 }
 
+const MASTER_WC_ORDER = [
+  "CUAPHOI",
+  "D1",
+  "D2",
+  "R1",
+  "R2",
+  "CK1",
+  "CK2",
+  "CK3",
+  "MNL",
+  "LR",
+  "KTP",
+];
+
 /**
  * 6. getXNTReport: High-performance Real-time XNT Report directly from Supabase PostgreSQL
+ * Derived automatically from Product Routings (all steps + implicit KTP) LEFT JOINed with opening_stocks and transactions.
  */
 export async function getXNTReport(dateStr: string, filterSku?: string): Promise<XNTReportItem[]> {
   const targetDate = dateStr || getTodayVN();
 
-  const { data: workshops } = await supabaseAdmin.from("workshops").select("id, code, name, is_ktp");
-  if (!workshops || workshops.length === 0) return [];
+  let prodQuery = supabaseAdmin
+    .from("products")
+    .select(`
+      id,
+      part_no,
+      name_vi,
+      product_routings (
+        step_order,
+        workshops (
+          id,
+          code,
+          name,
+          is_ktp
+        )
+      )
+    `)
+    .order("part_no", { ascending: true });
 
-  let prodQuery = supabaseAdmin.from("products").select("id, part_no");
   if (filterSku) {
-    prodQuery = prodQuery.eq("part_no", filterSku);
+    prodQuery = prodQuery.eq("part_no", filterSku.trim());
   }
-  const { data: products } = await prodQuery;
-  if (!products || products.length === 0) return [];
+
+  // Fetch workshops, products with routing, opening stocks, and transactions in parallel
+  const [
+    { data: workshops },
+    { data: products },
+    { data: openings },
+    { data: txs }
+  ] = await Promise.all([
+    supabaseAdmin.from("workshops").select("id, code, name, is_ktp"),
+    prodQuery,
+    supabaseAdmin
+      .from("opening_stocks")
+      .select("workshop_id, product_id, ton_phoi, ton_thanh_pham, snapshot_date")
+      .lte("snapshot_date", targetDate),
+    supabaseAdmin
+      .from("inventory_transactions")
+      .select("id, transaction_type, product_id, work_order_id, from_workshop_id, to_workshop_id, qty_tp_ok, qty_ng, note, transaction_date")
+      .lte("transaction_date", targetDate)
+      .range(0, 9999)
+  ]);
+
+  if (!workshops || workshops.length === 0 || !products || products.length === 0) return [];
 
   const wsMap = new Map(workshops.map((w) => [w.id, w]));
+  const wsByCode = new Map(workshops.map((w) => [w.code.toUpperCase(), w]));
+  const ktpWs = workshops.find((w) => w.is_ktp || w.code.toUpperCase() === "KTP") || workshops[workshops.length - 1];
+
   const prodMap = new Map(products.map((p) => [p.id, p]));
+  const reportMap = new Map<string, XNTReportItem>();
 
-  const { data: openings } = await supabaseAdmin
-    .from("opening_stocks")
-    .select("workshop_id, product_id, ton_phoi, ton_thanh_pham, snapshot_date")
-    .lte("snapshot_date", targetDate);
+  // 1. Populate base grid from Product Routings (every routing step + implicit KTP)
+  for (const prod of products) {
+    const rawRoutings = (prod.product_routings || []).sort(
+      (a: any, b: any) => (a.step_order || 0) - (b.step_order || 0)
+    );
 
-  const { data: txs } = await supabaseAdmin
-    .from("inventory_transactions")
-    .select("id, transaction_type, product_id, work_order_id, from_workshop_id, to_workshop_id, qty_tp_ok, qty_ng, note, transaction_date")
-    .lte("transaction_date", targetDate)
-    .range(0, 9999);
+    const routingWsCodes = rawRoutings
+      .map((r: any) => r.workshops?.code?.toUpperCase())
+      .filter(Boolean);
 
+    // If routing does not already include KTP, ensure KTP is present as final step
+    if (!routingWsCodes.includes("KTP")) {
+      routingWsCodes.push("KTP");
+    }
+
+    for (const wsCode of routingWsCodes) {
+      const ws = wsByCode.get(wsCode) || (wsCode === "KTP" ? ktpWs : null);
+      const code = ws ? ws.code : wsCode;
+      const key = `${code}:${prod.part_no}`;
+      reportMap.set(key, {
+        wcCode: code,
+        sku: prod.part_no,
+        opening: { tonPhoi: 0, tonThanhPham: 0 },
+        nhap: { tonPhoi: 0, tonThanhPham: 0 },
+        xuat: { tonPhoi: 0, tonThanhPham: 0 },
+        closing: { tonPhoi: 0, tonThanhPham: 0 },
+      });
+    }
+  }
+
+  // 2. Map reversals for accurate net qty deduction
   const txList = txs || [];
   const reversalMap = new Map<string, { ok: number; ng: number }>();
   for (const t of txList) {
@@ -786,22 +859,7 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
     }
   }
 
-  const reportMap = new Map<string, XNTReportItem>();
-
-  for (const p of products) {
-    for (const w of workshops) {
-      const key = `${w.code}:${p.part_no}`;
-      reportMap.set(key, {
-        wcCode: w.code,
-        sku: p.part_no,
-        opening: { tonPhoi: 0, tonThanhPham: 0 },
-        nhap: { tonPhoi: 0, tonThanhPham: 0 },
-        xuat: { tonPhoi: 0, tonThanhPham: 0 },
-        closing: { tonPhoi: 0, tonThanhPham: 0 },
-      });
-    }
-  }
-
+  // 3. Map latest opening stock per (workshop, product)
   const latestOpeningMap = new Map<string, any>();
   for (const op of openings || []) {
     const key = `${op.workshop_id}:${op.product_id}`;
@@ -816,60 +874,112 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
     const prod = prodMap.get(op.product_id);
     if (ws && prod) {
       const itemKey = `${ws.code}:${prod.part_no}`;
-      const item = reportMap.get(itemKey);
-      if (item) {
-        item.opening.tonPhoi = Number(op.ton_phoi || 0);
-        item.opening.tonThanhPham = Number(op.ton_thanh_pham || 0);
+      let item = reportMap.get(itemKey);
+      if (!item) {
+        item = {
+          wcCode: ws.code,
+          sku: prod.part_no,
+          opening: { tonPhoi: 0, tonThanhPham: 0 },
+          nhap: { tonPhoi: 0, tonThanhPham: 0 },
+          xuat: { tonPhoi: 0, tonThanhPham: 0 },
+          closing: { tonPhoi: 0, tonThanhPham: 0 },
+        };
+        reportMap.set(itemKey, item);
       }
+      item.opening.tonPhoi = Number(op.ton_phoi || 0);
+      item.opening.tonThanhPham = Number(op.ton_thanh_pham || 0);
     }
   }
 
+  // 4. Apply transactions on target date
   for (const t of txList) {
     if (t.transaction_date !== targetDate || isReversalTx(t)) continue;
 
     const rev = reversalMap.get(t.id.toLowerCase()) || { ok: 0, ng: 0 };
     const netOk = Math.max(0, (t.qty_tp_ok || 0) - rev.ok);
-    const netNg = Math.max(0, (t.qty_ng || 0) - rev.ng);
     const prod = prodMap.get(t.product_id);
     if (!prod) continue;
 
     if (t.transaction_type === "PRODUCTION_INPUT" && t.to_workshop_id) {
       const ws = wsMap.get(t.to_workshop_id);
       if (ws) {
-        const item = reportMap.get(`${ws.code}:${prod.part_no}`);
-        if (item) {
-          item.nhap.tonThanhPham += netOk;
+        const itemKey = `${ws.code}:${prod.part_no}`;
+        let item = reportMap.get(itemKey);
+        if (!item) {
+          item = {
+            wcCode: ws.code,
+            sku: prod.part_no,
+            opening: { tonPhoi: 0, tonThanhPham: 0 },
+            nhap: { tonPhoi: 0, tonThanhPham: 0 },
+            xuat: { tonPhoi: 0, tonThanhPham: 0 },
+            closing: { tonPhoi: 0, tonThanhPham: 0 },
+          };
+          reportMap.set(itemKey, item);
         }
+        item.nhap.tonThanhPham += netOk;
       }
     } else if (t.transaction_type === "TRANSFER") {
       if (t.from_workshop_id) {
         const fromWs = wsMap.get(t.from_workshop_id);
         if (fromWs) {
-          const item = reportMap.get(`${fromWs.code}:${prod.part_no}`);
-          if (item) item.xuat.tonThanhPham += netOk;
+          const itemKey = `${fromWs.code}:${prod.part_no}`;
+          let item = reportMap.get(itemKey);
+          if (!item) {
+            item = {
+              wcCode: fromWs.code,
+              sku: prod.part_no,
+              opening: { tonPhoi: 0, tonThanhPham: 0 },
+              nhap: { tonPhoi: 0, tonThanhPham: 0 },
+              xuat: { tonPhoi: 0, tonThanhPham: 0 },
+              closing: { tonPhoi: 0, tonThanhPham: 0 },
+            };
+            reportMap.set(itemKey, item);
+          }
+          item.xuat.tonThanhPham += netOk;
         }
       }
       if (t.to_workshop_id) {
         const toWs = wsMap.get(t.to_workshop_id);
         if (toWs) {
-          const item = reportMap.get(`${toWs.code}:${prod.part_no}`);
-          if (item) item.nhap.tonPhoi += netOk;
+          const itemKey = `${toWs.code}:${prod.part_no}`;
+          let item = reportMap.get(itemKey);
+          if (!item) {
+            item = {
+              wcCode: toWs.code,
+              sku: prod.part_no,
+              opening: { tonPhoi: 0, tonThanhPham: 0 },
+              nhap: { tonPhoi: 0, tonThanhPham: 0 },
+              xuat: { tonPhoi: 0, tonThanhPham: 0 },
+              closing: { tonPhoi: 0, tonThanhPham: 0 },
+            };
+            reportMap.set(itemKey, item);
+          }
+          item.nhap.tonPhoi += netOk;
         }
+      }
+    } else if (t.transaction_type === "SHIPMENT" && t.from_workshop_id) {
+      const fromWs = wsMap.get(t.from_workshop_id);
+      if (fromWs) {
+        const itemKey = `${fromWs.code}:${prod.part_no}`;
+        let item = reportMap.get(itemKey);
+        if (!item) {
+          item = {
+            wcCode: fromWs.code,
+            sku: prod.part_no,
+            opening: { tonPhoi: 0, tonThanhPham: 0 },
+            nhap: { tonPhoi: 0, tonThanhPham: 0 },
+            xuat: { tonPhoi: 0, tonThanhPham: 0 },
+            closing: { tonPhoi: 0, tonThanhPham: 0 },
+          };
+          reportMap.set(itemKey, item);
+        }
+        item.xuat.tonThanhPham += netOk;
       }
     }
   }
 
-  const items = Array.from(reportMap.values()).filter((item) => {
-    return (
-      item.opening.tonPhoi > 0 ||
-      item.opening.tonThanhPham > 0 ||
-      item.nhap.tonPhoi > 0 ||
-      item.nhap.tonThanhPham > 0 ||
-      item.xuat.tonPhoi > 0 ||
-      item.xuat.tonThanhPham > 0
-    );
-  });
-
+  // 5. Calculate closing balances for all items (without filtering out 0-value items)
+  const items = Array.from(reportMap.values());
   for (const item of items) {
     item.closing = {
       tonPhoi: item.opening.tonPhoi + item.nhap.tonPhoi - item.xuat.tonPhoi,
@@ -877,7 +987,15 @@ export async function getXNTReport(dateStr: string, filterSku?: string): Promise
     };
   }
 
-  items.sort((a, b) => a.wcCode.localeCompare(b.wcCode) || a.sku.localeCompare(b.sku));
+  // 6. Sort in deterministic manufacturing flow order
+  const orderMap = new Map(MASTER_WC_ORDER.map((code, idx) => [code, idx]));
+  items.sort((a, b) => {
+    const orderA = orderMap.has(a.wcCode) ? orderMap.get(a.wcCode)! : 999;
+    const orderB = orderMap.has(b.wcCode) ? orderMap.get(b.wcCode)! : 999;
+    if (orderA !== orderB) return orderA - orderB;
+    return a.sku.localeCompare(b.sku);
+  });
+
   return items;
 }
 

@@ -35,3 +35,7 @@ next-env.d.ts
 *.pem
 .idea/
 .vscode/
+
+# scratch files
+scratch/
+

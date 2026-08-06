@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createShipment, listShipments } from "@/lib/shipment";
+import { createShipment, listShipments, getShipment } from "@/lib/shipment";
 import { recordShipment } from "@/lib/wo-postgres";
 import { authorize, handleApiError } from "@/lib/auth";
 
@@ -9,6 +9,15 @@ export async function GET(req: NextRequest) {
 
   try {
     const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+    if (id) {
+      const detail = await getShipment(id);
+      if (!detail) {
+        return NextResponse.json({ error: "Không tìm thấy thông tin phiếu xuất." }, { status: 404 });
+      }
+      return NextResponse.json(detail);
+    }
+
     const customerId = searchParams.get("customerId") || undefined;
     const search = searchParams.get("search") || undefined;
 
@@ -33,7 +42,18 @@ export async function POST(req: NextRequest) {
     }
 
     // 2. Support Customer Shipment creation (from Customer Shipment dashboard)
-    const { customerId, items, note } = body;
+    const {
+      customerId,
+      items,
+      note,
+      extraData,
+      shipDate,
+      customerAddress,
+      customerPhone,
+      deliveryTime,
+      creatorName,
+      creatorTitle,
+    } = body;
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return NextResponse.json(
@@ -42,7 +62,17 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const record = await createShipment(customerId || "", items, user!.username, note);
+    const mergedExtra = extraData || {
+      shipDate,
+      customerAddress,
+      customerPhone,
+      deliveryTime,
+      creatorName,
+      creatorTitle,
+      generalNote: note,
+    };
+
+    const record = await createShipment(customerId || "", items, user!.username, mergedExtra);
     return NextResponse.json(record);
   } catch (err) {
     return handleApiError(err, "Ghi nhận xuất hàng thất bại.");

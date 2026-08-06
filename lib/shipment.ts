@@ -3,7 +3,6 @@ import { getStockStatesBatch } from "./inventory-postgres";
 import { listPOs } from "./po-postgres";
 import { PO } from "./po-wo-engine";
 
-
 function isUuid(str?: string): boolean {
   if (!str) return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(str.trim());
@@ -13,6 +12,18 @@ export interface ShipmentItemInput {
   poLineId: string;
   productId: string;
   shippedQty: number;
+  notes?: string;
+}
+
+export interface ShipmentExtraData {
+  shipDate?: string;
+  customerAddress?: string;
+  customerPhone?: string;
+  deliveryTime?: string;
+  creatorName?: string;
+  creatorTitle?: string;
+  generalNote?: string;
+  itemNotes?: Record<string, string>;
 }
 
 export interface ShippableItem {
@@ -21,9 +32,12 @@ export interface ShippableItem {
   poLineId: string;
   customerId: string;
   customerName: string;
+  customerAddress?: string;
+  customerPhone?: string;
   productId: string;
   sku: string;
   productNameVi: string;
+  unit?: string;
   orderQty: number;
   alreadyShippedQty: number;
   remainingOrderQty: number;
@@ -36,15 +50,21 @@ export interface ShipmentHeader {
   shipmentNumber: string;
   customerId: string;
   customerName: string;
+  customerAddress?: string;
+  customerPhone?: string;
   shippedAt: string;
   createdBy: string;
   createdByName?: string;
+  creatorName?: string;
+  creatorTitle?: string;
+  deliveryTime?: string;
   note?: string;
   totalQty: number;
   itemsCount: number;
 }
 
 export interface ShipmentDetail extends ShipmentHeader {
+  poNumbers?: string[];
   items: Array<{
     id: string;
     poLineId: string;
@@ -52,8 +72,10 @@ export interface ShipmentDetail extends ShipmentHeader {
     productId: string;
     sku: string;
     productNameVi: string;
+    unit?: string;
     shippedQty: number;
     orderQty: number;
+    notes?: string;
   }>;
 }
 
@@ -94,6 +116,26 @@ export async function getShippableItems(filters?: {
     );
   }
 
+  // Fetch customer contact info map
+  const { data: customerRows } = await supabaseAdmin.from("customers").select("id, name, contact_info");
+  const customerInfoMap = new Map<string, { address?: string; phone?: string }>();
+  (customerRows || []).forEach((c) => {
+    let addr = "";
+    let phone = "";
+    if (c.contact_info) {
+      try {
+        const parsed = typeof c.contact_info === "string" ? JSON.parse(c.contact_info) : c.contact_info;
+        addr = parsed.address || "";
+        phone = parsed.phone || "";
+      } catch {
+        // text fallback
+        addr = String(c.contact_info);
+      }
+    }
+    if (c.id) customerInfoMap.set(c.id.toLowerCase(), { address: addr, phone });
+    if (c.name) customerInfoMap.set(c.name.trim().toLowerCase(), { address: addr, phone });
+  });
+
   const pairs = filteredPos.map((p) => ({ wcCode: "KTP", sku: p.sku }));
   const stockBatch = await getStockStatesBatch(pairs);
 
@@ -106,6 +148,8 @@ export async function getShippableItems(filters?: {
 
     if (remainingOrderQty > 0 && ktpAvailableQty > 0) {
       const maxShippableQty = Math.min(remainingOrderQty, ktpAvailableQty);
+      const custInfo = customerInfoMap.get((po.customerId || "").toLowerCase()) ||
+        customerInfoMap.get((po.customerName || "").trim().toLowerCase()) || {};
 
       result.push({
         poId: po.poId,
@@ -113,9 +157,12 @@ export async function getShippableItems(filters?: {
         poLineId: po.poLineId || po.poId,
         customerId: po.customerId || "",
         customerName: po.customerName,
+        customerAddress: custInfo.address || "",
+        customerPhone: custInfo.phone || "",
         productId: po.productId || "",
         sku: po.sku,
         productNameVi: po.productNameVi,
+        unit: "Cái",
         orderQty: po.qty,
         alreadyShippedQty: po.shippedQty || 0,
         remainingOrderQty,
@@ -129,13 +176,13 @@ export async function getShippableItems(filters?: {
 }
 
 /**
- * 2. Create Shipment (Atomic Transaction via RPC or TS Engine Fallback)
+ * 2. Create Shipment (Atomic Transaction via TS Engine)
  */
 export async function createShipment(
   customerId: string,
   items: ShipmentItemInput[],
   actor: string = "admin",
-  note: string = ""
+  extraDataOrNote?: string | ShipmentExtraData
 ): Promise<{ shipmentId: string; shipmentNumber: string }> {
   if (!items || items.length === 0) {
     throw new Error("Danh sách mặt hàng xuất không được để rỗng.");
@@ -156,20 +203,53 @@ export async function createShipment(
   }
 
   if (!actorUserId) {
-    // Fallback to first user in system or admin
     const { data: adminUsr } = await supabaseAdmin.from("users").select("id").limit(1).maybeSingle();
     actorUserId = adminUsr?.id || null;
   }
 
+  // Parse extraData
+  let extra: ShipmentExtraData = {};
+  if (typeof extraDataOrNote === "string") {
+    try {
+      if (extraDataOrNote.startsWith("{")) {
+        extra = JSON.parse(extraDataOrNote);
+      } else {
+        extra = { generalNote: extraDataOrNote };
+      }
+    } catch {
+      extra = { generalNote: extraDataOrNote };
+    }
+  } else if (extraDataOrNote && typeof extraDataOrNote === "object") {
+    extra = extraDataOrNote;
+  }
+
+  // Validate that all PO lines belong to EXACTLY 1 customer
+  const itemPoLineIds = items.map((i) => i.poLineId);
+  const { data: lineRows, error: lineErr } = await supabaseAdmin
+    .from("po_lines")
+    .select("id, customer_id, po_id, product_id, order_qty, purchase_orders(customer_id)")
+    .in("id", itemPoLineIds);
+
+  if (lineErr) {
+    throw new Error(`Lỗi kiểm tra thông tin PO Lines: ${lineErr.message}`);
+  }
+
+  const distinctCustomerIds = new Set<string>();
+  if (lineRows && lineRows.length > 0) {
+    for (const lr of lineRows) {
+      const cid = lr.customer_id || (lr as any).purchase_orders?.customer_id;
+      if (cid) distinctCustomerIds.add(String(cid).toLowerCase());
+    }
+  }
+
+  if (distinctCustomerIds.size > 1) {
+    throw new Error("Chỉ có thể gộp các PO cùng 1 khách hàng vào 1 phiếu.");
+  }
+
   // Ensure valid customer ID
   let validCustomerId = isUuid(customerId) ? customerId : null;
-  if (!validCustomerId && items.length > 0) {
-    const { data: lineRow } = await supabaseAdmin
-      .from("po_lines")
-      .select("customer_id")
-      .eq("id", items[0].poLineId)
-      .maybeSingle();
-    validCustomerId = lineRow?.customer_id || null;
+  if (!validCustomerId && distinctCustomerIds.size === 1) {
+    validCustomerId = Array.from(distinctCustomerIds)[0];
   }
 
   if (!validCustomerId) {
@@ -181,6 +261,18 @@ export async function createShipment(
     throw new Error("Không thể xác định Khách Hàng cho đơn xuất này.");
   }
 
+  // Update customer contact info if address or phone was provided
+  if (validCustomerId && (extra.customerAddress || extra.customerPhone)) {
+    const contactObj = {
+      address: extra.customerAddress || "",
+      phone: extra.customerPhone || "",
+    };
+    await supabaseAdmin
+      .from("customers")
+      .update({ contact_info: JSON.stringify(contactObj), updated_at: new Date().toISOString() })
+      .eq("id", validCustomerId);
+  }
+
   // Find KTP workshop ID for inventory transaction recording
   const { data: ktpWs } = await supabaseAdmin
     .from("workshops")
@@ -190,17 +282,33 @@ export async function createShipment(
     .maybeSingle();
   const ktpWorkshopId = ktpWs?.id || null;
 
-  // TS Engine Transaction Execution
+  // Build structured metadata JSON for notes column
+  const itemNotesMap: Record<string, string> = { ...(extra.itemNotes || {}) };
+  items.forEach((it) => {
+    if (it.notes) itemNotesMap[it.poLineId] = it.notes.trim();
+  });
+
+  const fullMetadata: ShipmentExtraData = {
+    shipDate: extra.shipDate || new Date().toISOString().split("T")[0],
+    customerAddress: extra.customerAddress?.trim(),
+    customerPhone: extra.customerPhone?.trim(),
+    deliveryTime: extra.deliveryTime?.trim() || "Trong ngày",
+    creatorName: extra.creatorName?.trim() || "Đỗ Như Ba",
+    creatorTitle: extra.creatorTitle?.trim() || "P.PSX",
+    generalNote: extra.generalNote?.trim() || "",
+    itemNotes: itemNotesMap,
+  };
+
   const shipmentCode = `SHIP-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-  const today = new Date().toISOString().split("T")[0];
+  const shipDate = fullMetadata.shipDate || new Date().toISOString().split("T")[0];
 
   const { data: shipmentHeader, error: headerErr } = await supabaseAdmin
     .from("shipments")
     .insert({
       shipment_code: shipmentCode,
       customer_id: validCustomerId,
-      ship_date: today,
-      notes: note || `Xuất hàng cho khách`,
+      ship_date: shipDate,
+      notes: JSON.stringify(fullMetadata),
       created_by: actorUserId,
     })
     .select("id, shipment_code")
@@ -258,17 +366,17 @@ export async function createShipment(
       // Record SHIPMENT inventory transaction to deduct tonThanhPham from KTP
       const resolvedProdId = item.productId || lineRow.product_id;
       if (resolvedProdId && ktpWorkshopId) {
-        const { data: newTx, error: txErr } = await supabaseAdmin
+        const { data: newTx } = await supabaseAdmin
           .from("inventory_transactions")
           .insert({
             transaction_type: "SHIPMENT",
-            transaction_date: today,
+            transaction_date: shipDate,
             product_id: resolvedProdId,
             from_workshop_id: ktpWorkshopId,
             qty_tp_ok: item.shippedQty,
             qty_ng: 0,
             created_by: actorUserId,
-            note: `Xuất giao khách theo phiếu ${shipmentHeader.shipment_code}${note ? `: ${note}` : ""}`,
+            note: `Xuất giao khách theo phiếu ${shipmentHeader.shipment_code}${fullMetadata.generalNote ? `: ${fullMetadata.generalNote}` : ""}`,
           })
           .select("id")
           .maybeSingle();
@@ -339,7 +447,8 @@ export async function listShipments(filters?: {
       created_by,
       notes,
       customers (
-        name
+        name,
+        contact_info
       ),
       users (
         full_name,
@@ -368,6 +477,17 @@ export async function listShipments(filters?: {
 
     const totalQty = items.reduce((acc: number, curr: any) => acc + (curr.shipped_qty || 0), 0);
 
+    let meta: ShipmentExtraData = {};
+    let displayNote = row.notes || "";
+    try {
+      if (row.notes && row.notes.startsWith("{")) {
+        meta = JSON.parse(row.notes);
+        displayNote = meta.generalNote || "";
+      }
+    } catch {
+      // ignore
+    }
+
     if (filters?.search) {
       const q = filters.search.toLowerCase();
       const numMatch = (row.shipment_code || "").toLowerCase().includes(q);
@@ -380,10 +500,15 @@ export async function listShipments(filters?: {
       shipmentNumber: row.shipment_code,
       customerId: row.customer_id || "",
       customerName: cust?.name || "Khách Hàng Chưa Phân Loại",
+      customerAddress: meta.customerAddress || "",
+      customerPhone: meta.customerPhone || "",
       shippedAt: row.ship_date,
       createdBy: row.created_by || "",
       createdByName: usr?.full_name || usr?.username || "Admin",
-      note: row.notes || "",
+      creatorName: meta.creatorName || usr?.full_name || "Đỗ Như Ba",
+      creatorTitle: meta.creatorTitle || "P.PSX",
+      deliveryTime: meta.deliveryTime || "Trong ngày",
+      note: displayNote,
       totalQty,
       itemsCount: items.length,
     });
@@ -406,7 +531,8 @@ export async function getShipment(shipmentId: string): Promise<ShipmentDetail | 
       created_by,
       notes,
       customers (
-        name
+        name,
+        contact_info
       ),
       users (
         full_name,
@@ -417,6 +543,7 @@ export async function getShipment(shipmentId: string): Promise<ShipmentDetail | 
         po_line_id,
         shipped_qty,
         po_lines (
+          id,
           order_qty,
           product_id,
           purchase_orders (
@@ -434,29 +561,64 @@ export async function getShipment(shipmentId: string): Promise<ShipmentDetail | 
   const usr = (row as any).users;
   const rawItems = (row as any).shipment_items || [];
 
+  let meta: ShipmentExtraData = {};
+  let displayNote = row.notes || "";
+  try {
+    if (row.notes && row.notes.startsWith("{")) {
+      meta = JSON.parse(row.notes);
+      displayNote = meta.generalNote || "";
+    }
+  } catch {
+    // ignore
+  }
+
+  let custAddress = meta.customerAddress || "";
+  let custPhone = meta.customerPhone || "";
+  if (!custAddress && cust?.contact_info) {
+    try {
+      const parsed = typeof cust.contact_info === "string" ? JSON.parse(cust.contact_info) : cust.contact_info;
+      custAddress = parsed.address || "";
+      custPhone = parsed.phone || "";
+    } catch {
+      custAddress = String(cust.contact_info);
+    }
+  }
+
   const items = [];
+  const poSet = new Set<string>();
+
   for (const item of rawItems) {
     const poLine = item.po_lines;
     const poHeader = poLine?.purchase_orders;
     const prodId = poLine?.product_id;
+    const poNum = poHeader?.po_number || "";
+    if (poNum) poSet.add(poNum);
 
     let sku = "";
     let productNameVi = "";
     if (prodId) {
-      const { data: prod } = await supabaseAdmin.from("products").select("part_no, name_vi").eq("id", prodId).maybeSingle();
+      const { data: prod } = await supabaseAdmin
+        .from("products")
+        .select("part_no, name_vi")
+        .eq("id", prodId)
+        .maybeSingle();
       sku = prod?.part_no || "";
       productNameVi = prod?.name_vi || "";
     }
 
+    const itemNote = meta.itemNotes?.[item.po_line_id] || "";
+
     items.push({
       id: item.id,
       poLineId: item.po_line_id,
-      poNumber: poHeader?.po_number || "",
+      poNumber: poNum,
       productId: prodId || "",
       sku,
       productNameVi,
+      unit: "Cái",
       shippedQty: item.shipped_qty || 0,
       orderQty: poLine?.order_qty || 0,
+      notes: itemNote,
     });
   }
 
@@ -467,13 +629,18 @@ export async function getShipment(shipmentId: string): Promise<ShipmentDetail | 
     shipmentNumber: row.shipment_code,
     customerId: row.customer_id || "",
     customerName: cust?.name || "Khách Hàng Chưa Phân Loại",
+    customerAddress: custAddress,
+    customerPhone: custPhone,
     shippedAt: row.ship_date,
     createdBy: row.created_by || "",
     createdByName: usr?.full_name || usr?.username || "Admin",
-    note: row.notes || "",
+    creatorName: meta.creatorName || "Đỗ Như Ba",
+    creatorTitle: meta.creatorTitle || "P.PSX",
+    deliveryTime: meta.deliveryTime || "Trong ngày",
+    note: displayNote,
     totalQty,
     itemsCount: items.length,
+    poNumbers: Array.from(poSet),
     items,
   };
 }
-

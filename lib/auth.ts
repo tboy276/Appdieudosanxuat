@@ -68,7 +68,9 @@ export function verifyToken(token: string): JWTPayload | null {
       .replace(/\+/g, "-")
       .replace(/\//g, "_");
 
-    if (signature !== expectedSig) {
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
       return null;
     }
 
